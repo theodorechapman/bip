@@ -224,15 +224,10 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, req) => {
     try {
-      const body = await req.json();
+      const authBypass = (process.env.AUTH_BYPASS ?? "").trim().toLowerCase() === "true";
+      const body = await req.json().catch(() => ({}));
       const payload = body as { captchaToken?: unknown; inviteCode?: unknown };
-      if (
-        typeof payload.captchaToken !== "string" ||
-        typeof payload.inviteCode !== "string"
-      ) {
-        return json(400, { error: "captchaToken and inviteCode are required" });
-      }
-      const inviteCodes = getConfiguredInviteCodes();
+
       const agentId = getAgentId(req);
       if (agentId === null) {
         return json(400, { error: "X-Agent-Id header is required" });
@@ -255,28 +250,42 @@ http.route({
         subject: agentId,
         ip,
       });
-      const captchaToken = payload.captchaToken.trim();
-      if (captchaToken.length === 0) {
-        return json(400, { error: "captchaToken must not be empty" });
+
+      if (!authBypass) {
+        if (
+          typeof payload.captchaToken !== "string" ||
+          typeof payload.inviteCode !== "string"
+        ) {
+          return json(400, { error: "captchaToken and inviteCode are required" });
+        }
+        const inviteCodes = getConfiguredInviteCodes();
+        const captchaToken = payload.captchaToken.trim();
+        if (captchaToken.length === 0) {
+          return json(400, { error: "captchaToken must not be empty" });
+        }
+        const inviteCode = payload.inviteCode.trim();
+        if (inviteCode.length === 0) {
+          return json(400, { error: "inviteCode must not be empty" });
+        }
+        const captchaResult = await verifyHcaptcha(captchaToken, getClientIp(req));
+        if (!captchaResult.ok) {
+          return json(401, {
+            error: "hCaptcha verification failed",
+            errorCodes: captchaResult.errorCodes,
+          });
+        }
+        if (!inviteCodes.includes(inviteCode)) {
+          return json(403, { error: "Invalid invite code" });
+        }
       }
-      const inviteCode = payload.inviteCode.trim();
-      if (inviteCode.length === 0) {
-        return json(400, { error: "inviteCode must not be empty" });
-      }
-      const captchaResult = await verifyHcaptcha(captchaToken, getClientIp(req));
-      if (!captchaResult.ok) {
-        return json(401, {
-          error: "hCaptcha verification failed",
-          errorCodes: captchaResult.errorCodes,
-        });
-      }
-      if (!inviteCodes.includes(inviteCode)) {
-        return json(403, { error: "Invalid invite code" });
-      }
+
       const result = await ctx.runMutation(internal.auth.startLogin, {
         agentId,
       });
-      return json(200, result);
+      return json(200, {
+        ...result,
+        authBypass,
+      });
     } catch (error) {
       const message = errorToMessage(error);
       if (message.includes("INVITE_CODES is not configured")) {
