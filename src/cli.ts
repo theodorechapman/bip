@@ -88,7 +88,7 @@ type ReleasePhoneResponse = {
 };
 
 const CLI_VERSION = "0.1.0";
-const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
+const CONFIG_DIR = join(homedir(), ".config", "bip-cli");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const CONSENT_FILE = join(CONFIG_DIR, "consent.json");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
@@ -183,7 +183,7 @@ function setConsent(consent: Consent): void {
 }
 
 function getEncryptionKey(): string {
-  const envKey = process.env.MOONPAY_DEMO_ENCRYPTION_KEY;
+  const envKey = process.env.BIP_ENCRYPTION_KEY;
   if (typeof envKey === "string" && envKey.length > 0) {
     return envKey;
   }

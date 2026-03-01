@@ -19,7 +19,11 @@ import {
 } from "../agentmail-client";
 import { registerPhoneActions } from "./phone-verify";
 
-const PASSWORD = "BipAgent2026!xK9";
+import { randomBytes } from "node:crypto";
+
+function generatePassword(): string {
+  return randomBytes(16).toString("base64url") + "!A1";
+}
 
 function getLLM() {
   if (process.env.OPENAI_API_KEY) {
@@ -80,7 +84,7 @@ export async function demoSignup(targetUrl?: string): Promise<string | null> {
   });
 
   const profile = new BrowserProfile({
-    headless: false,
+    headless: process.env.BIP_HEADLESS !== "false",
     highlight_elements: true,
   });
   const browserSession = new BrowserSession({ browser_profile: profile });
@@ -124,7 +128,7 @@ If signup fails for another reason, return "FAILED: <reason>".
     max_actions_per_step: 5,
     use_vision: true,
     sensitive_data: {
-      "*": { email, password: PASSWORD, phone: phone.phoneNumber },
+      "*": { email, password: generatePassword(), phone: phone.phoneNumber },
     },
   });
 

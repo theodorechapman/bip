@@ -51,7 +51,7 @@ export async function createOrReuseInbox(forceNew = false): Promise<Inbox> {
   if (!forceNew) {
     const list = await apiGet<{ inboxes: Inbox[] }>("/inboxes");
     if (list.inboxes && list.inboxes.length > 0) {
-      const inbox = list.inboxes[0];
+      const inbox = list.inboxes[0]!;
       console.log(`   Reusing inbox: ${inbox.inbox_id}`);
       return inbox;
     }

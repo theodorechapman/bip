@@ -108,7 +108,7 @@ function serializeMessages(
       const text =
         typeof msg.content === "string"
           ? msg.content
-          : msg.content.map((p) => p.text).join("\n");
+          : msg.content.map((p: { text: string }) => p.text).join("\n");
       instructions = instructions ? `${instructions}\n${text}` : text;
     } else if (msg instanceof UserMessage) {
       if (typeof msg.content === "string") {
@@ -129,7 +129,7 @@ function serializeMessages(
       }
     } else if (msg instanceof AssistantMessage) {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        const tc = msg.tool_calls[0];
+        const tc = msg.tool_calls[0]!;
         input.push({
           type: "function_call",
           id: tc.id,

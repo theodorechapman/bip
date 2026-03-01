@@ -14,7 +14,11 @@ import {
   createOrReuseInbox,
 } from "../agentmail-client";
 
-const PASSWORD = "BipAgent2026!xK9";
+import { randomBytes } from "node:crypto";
+
+function generatePassword(): string {
+  return randomBytes(16).toString("base64url") + "!A1";
+}
 
 function getLLM() {
   // Prefer Codex (free with ChatGPT Plus/Pro)
@@ -73,7 +77,7 @@ export async function getOpenRouterKey(): Promise<string | null> {
   });
 
   const profile = new BrowserProfile({
-    headless: false,
+    headless: process.env.BIP_HEADLESS !== "false",
     highlight_elements: true,
     allowed_domains: ["*.openrouter.ai", "*.clerk.accounts.dev", "*.accounts.dev"],
   });
@@ -119,7 +123,7 @@ STEP 4 - CREATE API KEY:
     max_actions_per_step: 5,
     use_vision: true,
     sensitive_data: {
-      "*.openrouter.ai": { email, password: PASSWORD },
+      "*.openrouter.ai": { email, password: generatePassword() },
     },
   });
 
