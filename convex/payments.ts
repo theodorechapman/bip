@@ -119,7 +119,7 @@ async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promis
   const taskId = created.id ?? created.task_id;
   if (!taskId) return { ok: false, error: "bu task id missing in response", raw: created };
 
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 240_000;
   while (Date.now() < deadline) {
     const statusResp = await fetch(`${base}/api/v2/tasks/${taskId}/status`, {
       headers: {
@@ -155,7 +155,7 @@ async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 
-  return { ok: false, taskId, error: "bu task timeout after 60s" };
+  return { ok: false, taskId, error: "bu task timeout after 240s", raw: { status: "timeout" } };
 }
 
 
@@ -628,6 +628,30 @@ export const executeIntent = internalAction({
     const doneTs = now();
 
     if (!buResult.ok) {
+      const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
+      const isRecoverable = (intent.intentType === "account_bootstrap" || intent.intentType === "api_key_purchase") && (buResult.error ?? "").toLowerCase().includes("timeout");
+      if (isRecoverable) {
+        await ctx.runMutation(payments._updateRun, {
+          runId,
+          status: "action_required",
+          outputJson: JSON.stringify({ taskId: buResult.taskId ?? null, handoffUrl, raw: buResult.raw ?? null }),
+          error: buResult.error ?? "execution_timeout",
+          updatedAt: doneTs,
+        });
+        await ctx.runMutation(payments._setIntentStatus, {
+          intentId: intent.intentId,
+          status: "action_required",
+          updatedAt: doneTs,
+        });
+        await ctx.runMutation(payments._recordEvent, {
+          intentId: intent.intentId,
+          eventType: "intent_action_required",
+          payloadJson: JSON.stringify({ runId, traceId, reason: buResult.error ?? "execution_timeout", taskId: buResult.taskId ?? null, handoffUrl }),
+          createdAt: doneTs,
+        });
+        return { runId, status: "action_required", reason: buResult.error ?? "execution_timeout", taskId: buResult.taskId ?? null, traceId, handoffUrl };
+      }
+
       await ctx.runMutation(payments._updateRun, {
         runId,
         status: "failed",
@@ -653,7 +677,7 @@ export const executeIntent = internalAction({
       await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "intent_execution_failed",
-        payloadJson: JSON.stringify({ runId, traceId, error: buResult.error, taskId: buResult.taskId ?? null }),
+        payloadJson: JSON.stringify({ runId, traceId, error: buResult.error, taskId: buResult.taskId ?? null, handoffUrl }),
         createdAt: doneTs,
       });
 
@@ -672,7 +696,7 @@ export const executeIntent = internalAction({
         endedAt: doneTs,
       });
 
-      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId };
+      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId, handoffUrl };
     }
 
     const handoffNeeded = outputSuggestsManualIntervention(buResult.output);
