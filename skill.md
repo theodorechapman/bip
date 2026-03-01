@@ -1,111 +1,113 @@
 ---
-name: bip-payments-gateway
-version: 0.1.0
-description: "Register an agent, issue API keys, attach wallet, create/approve/execute payment intents, and run Browser Use-backed web tasks through a single endpoint."
-tags: [agents, payments, browser-use, api, cli, x402]
+name: bip-agent-gateway
+version: 0.2.0
+description: "universal agent endpoint: create/approve/execute intents, run browser-use tasks, and return traceable results over plain http."
+tags: [agents, payments, browser-use, api, tracing, laminar, hud]
 metadata:
   openclaw:
     emoji: "🧠"
   homepage: https://github.com/theodorechapman/bip
-  requires:
-    bins: [bun, bip]
 ---
 
-# bip payments gateway skill
+# bip skill.md (agent onboarding)
 
-this skill exposes a unified flow for any agent (including claude code) to run paid web tasks.
+use this when you want any agent (claude code, codex, curl bot, etc.) to call one endpoint and execute web/payment tasks with run traces.
 
-## core idea
-
-- agent calls bip endpoint
-- bip policy/intent lifecycle decides if task can execute
-- bip dispatches browser use task
-- bip returns run status + artifacts/events
-
-## setup
+## live endpoint
 
 ```bash
-# in repo root
-bun install
-bun run convex:dev
-
-# required for live browser-use execution
-export BROWSER_USE_API_KEY="<your-bu-api-key>"
-
-# optional
-export BROWSER_USE_API_BASE="https://api.browser-use.com"
-
-# payments mode
-export PAYMENTS_MODE="free"      # or metered
-export MIN_INTENT_BUDGET_USD="1" # gate for metered mode
+BASE="https://standing-aardvark-407.convex.site"
 ```
 
-## cli flow
+## what this gives you
+
+- login/session token for agent calls
+- intent lifecycle: drafted/approved/submitted/confirmed/failed
+- browser-use backed execution
+- run artifacts + status APIs
+- trace id on execute responses (`traceId`) for observability routing
+
+## fastest onboarding (copy/paste)
 
 ```bash
-# consent + login first
-bun run cli -- consent accept
-bun run cli -- login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
+BASE="https://standing-aardvark-407.convex.site"
+BU_KEY="<your-browser-use-key>"
+AGENT_ID="agent-$(date +%s)"
 
-# optional wallet registration
-bun run cli -- wallet_register --chain solana --address <wallet-address> --label main
-bun run cli -- wallet_balance --chain solana
+# 1) login
+TOKEN=$(curl -s -X POST "$BASE/auth/login" \
+  -H 'content-type: application/json' \
+  -H "x-agent-id: $AGENT_ID" \
+  -d '{}' | jq -r '.accessToken')
 
-# create intent
-bun run cli -- intent_create --task "find top 3 yc browser use hackathon posts and summarize" --budget-usd 8 --rail auto
+# 2) create intent
+INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"task":"open example.com and return title","budgetUsd":2,"rail":"auto"}' | jq -r '.intentId')
 
-# if needed
-bun run cli -- intent_approve --intent-id <intentId>
+# 3) execute intent
+EXEC=$(curl -s -X POST "$BASE/api/tools/execute_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "x-browser-use-api-key: $BU_KEY" \
+  -H 'content-type: application/json' \
+  -d "{\"intentId\":\"$INTENT\"}")
 
-# execute
-bun run cli -- intent_execute --intent-id <intentId>
+echo "$EXEC" | jq
+RUN_ID=$(echo "$EXEC" | jq -r '.runId')
 
-# track
-bun run cli -- intent_status --intent-id <intentId>
-bun run cli -- run_status --run-id <runId>
+# 4) run status
+curl -s -X POST "$BASE/api/tools/run_status" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"runId\":\"$RUN_ID\"}" | jq
 ```
 
-## api flow (for claude code / curl agents)
+## api contract (minimal)
 
-```bash
-# create intent
-curl -X POST "$BASE/api/tools/create_intent" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"task":"top up openrouter under $8","budgetUsd":8,"rail":"auto"}'
+- `POST /auth/login` (header: `X-Agent-Id`)
+- `POST /api/tools/create_intent`
+- `POST /api/tools/approve_intent` (if intent needs approval)
+- `POST /api/tools/execute_intent` (supports `X-Browser-Use-API-Key`)
+- `POST /api/tools/intent_status`
+- `POST /api/tools/run_status`
 
-# approve (if needs_approval)
-curl -X POST "$BASE/api/tools/approve_intent" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"intentId":"pi_xxx"}'
+## tracing + observability
 
-# execute
-curl -X POST "$BASE/api/tools/execute_intent" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"intentId":"pi_xxx"}'
+execute responses include:
 
-# status
-curl -X POST "$BASE/api/tools/intent_status" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"intentId":"pi_xxx"}'
-```
+- `traceId`
+- `runId`
+- `taskId`
+- `status`
 
-## current rails
+lifecycle emits currently include:
 
-- `auto` -> resolves to `x402`
-- `x402` (routing/scaffold)
-- `bitrefill` (routing/scaffold)
-- `card` (routing/scaffold)
+- `started`
+- `rail_selected`
+- `failed`
+- `confirmed`
 
-## current status
+optional external sinks (server env):
 
-- auth/session/quotas: implemented
-- wallet register/balance endpoints: implemented
-- intent lifecycle + events: implemented
-- bu-backed execution + run tracking: implemented
-- metered gate (budget threshold): implemented
+- `LAMINAR_INGEST_URL` (+ optional `LAMINAR_API_KEY`)
+- `HUD_TRACE_URL` (+ optional `HUD_API_KEY`)
 
-next: real rail settlement adapters + laminar/hud tracing + swarm comparison.
+## rails
+
+- `auto` (currently resolves to `x402`)
+- `x402` (scaffold/routing)
+- `bitrefill` (scaffold/routing)
+- `card` (scaffold/routing)
+
+## current build status
+
+working now:
+- end-to-end intent -> execute -> run_status
+- browser-use execution verified
+- trace ids returned and stored in events
+
+not final yet:
+- full rail settlement logic
+- hardened production auth policy
+- advanced swarm comparison dashboards
