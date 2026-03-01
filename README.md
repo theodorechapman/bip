@@ -136,6 +136,12 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 - `user retrieve`
 - `create_agentmail --email <email>`
 - `delete_agentmail --inbox-id <inboxId>`
+- `wallet_register --chain <chain> --address <address> [--label <label>]`
+- `wallet_balance [--chain <chain>]`
+- `intent_create --task <task> [--budget-usd <usd>] [--rail <rail>]`
+- `intent_approve --intent-id <intentId>`
+- `intent_execute --intent-id <intentId>`
+- `run_status --run-id <runId>`
 - `logout`
 
 ## Typecheck

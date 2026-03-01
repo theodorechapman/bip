@@ -1,3 +1,4 @@
+import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
@@ -12,6 +13,75 @@ function randomId(prefix: string): string {
 
 function now(): number {
   return Date.now();
+}
+
+async function callBrowserUseTask(task: string): Promise<{
+  ok: boolean;
+  taskId?: string;
+  output?: unknown;
+  raw?: unknown;
+  error?: string;
+}> {
+  const apiKey = process.env.BROWSER_USE_API_KEY?.trim();
+  if (!apiKey) {
+    return { ok: false, error: "BROWSER_USE_API_KEY not configured" };
+  }
+
+  const base = process.env.BROWSER_USE_API_BASE?.trim() || "https://api.browser-use.com";
+
+  // API v2 fallback path for broad compatibility.
+  const createResp = await fetch(`${base}/api/v2/tasks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ task }),
+  });
+
+  if (!createResp.ok) {
+    const err = await createResp.text();
+    return { ok: false, error: `bu create task failed (${createResp.status}): ${err.slice(0, 400)}` };
+  }
+
+  const created = (await createResp.json()) as { id?: string; task_id?: string };
+  const taskId = created.id ?? created.task_id;
+  if (!taskId) return { ok: false, error: "bu task id missing in response", raw: created };
+
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const statusResp = await fetch(`${base}/api/v2/tasks/${taskId}/status`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!statusResp.ok) {
+      const err = await statusResp.text();
+      return { ok: false, error: `bu status failed (${statusResp.status}): ${err.slice(0, 400)}` };
+    }
+
+    const statusData = (await statusResp.json()) as {
+      status?: string;
+      output?: unknown;
+      cost?: unknown;
+      error?: unknown;
+    };
+
+    const status = (statusData.status ?? "").toString().toLowerCase();
+    if (["finished", "completed", "succeeded", "success"].includes(status)) {
+      return { ok: true, taskId, output: statusData.output, raw: statusData };
+    }
+    if (["failed", "error", "stopped", "cancelled", "canceled"].includes(status)) {
+      return {
+        ok: false,
+        taskId,
+        error: typeof statusData.error === "string" ? statusData.error : `task ${status}`,
+        raw: statusData,
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
+  return { ok: false, taskId, error: "bu task timeout after 60s" };
 }
 
 export const registerWallet = internalMutation({
@@ -144,12 +214,12 @@ export const executeIntent = internalAction({
     const runId = randomId("run");
     const ts = now();
 
-    const runDocId = await ctx.runMutation(internal.payments._insertRun, {
+    await ctx.runMutation(internal.payments._insertRun, {
       runId,
       intentId: intent.intentId,
       userId: intent.userId,
-      status: "ok",
-      outputJson: JSON.stringify({ note: "execution stub: wire browser-use + rail adapter next" }),
+      status: "running",
+      outputJson: null,
       error: null,
       createdAt: ts,
       updatedAt: ts,
@@ -163,12 +233,61 @@ export const executeIntent = internalAction({
 
     await ctx.runMutation(internal.payments._recordEvent, {
       intentId: intent.intentId,
-      eventType: "intent_executed",
-      payloadJson: JSON.stringify({ runId, runDocId }),
+      eventType: "intent_execution_started",
+      payloadJson: JSON.stringify({ runId, rail: intent.rail }),
       createdAt: ts,
     });
 
-    return { runId, status: "ok" };
+    const buResult = await callBrowserUseTask(intent.task);
+    const doneTs = now();
+
+    if (!buResult.ok) {
+      await ctx.runMutation(internal.payments._updateRun, {
+        runId,
+        status: "failed",
+        outputJson: buResult.raw ? JSON.stringify(buResult.raw) : null,
+        error: buResult.error ?? "execution_failed",
+        updatedAt: doneTs,
+      });
+
+      await ctx.runMutation(internal.payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "failed",
+        updatedAt: doneTs,
+      });
+
+      await ctx.runMutation(internal.payments._recordEvent, {
+        intentId: intent.intentId,
+        eventType: "intent_execution_failed",
+        payloadJson: JSON.stringify({ runId, error: buResult.error, taskId: buResult.taskId ?? null }),
+        createdAt: doneTs,
+      });
+
+      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null };
+    }
+
+    await ctx.runMutation(internal.payments._updateRun, {
+      runId,
+      status: "ok",
+      outputJson: JSON.stringify({ taskId: buResult.taskId ?? null, output: buResult.output ?? null, raw: buResult.raw ?? null }),
+      error: null,
+      updatedAt: doneTs,
+    });
+
+    await ctx.runMutation(internal.payments._setIntentStatus, {
+      intentId: intent.intentId,
+      status: "confirmed",
+      updatedAt: doneTs,
+    });
+
+    await ctx.runMutation(internal.payments._recordEvent, {
+      intentId: intent.intentId,
+      eventType: "intent_execution_confirmed",
+      payloadJson: JSON.stringify({ runId, taskId: buResult.taskId ?? null }),
+      createdAt: doneTs,
+    });
+
+    return { runId, status: "ok", taskId: buResult.taskId ?? null, output: buResult.output ?? null };
   },
 });
 
@@ -188,6 +307,30 @@ export const _insertRun = internalMutation({
   },
 });
 
+export const _updateRun = internalMutation({
+  args: {
+    runId: v.string(),
+    status: v.string(),
+    outputJson: v.union(v.string(), v.null()),
+    error: v.union(v.string(), v.null()),
+    updatedAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const run = await ctx.db
+      .query("runs")
+      .withIndex("by_run_id", (q) => q.eq("runId", args.runId))
+      .unique();
+    if (run === null) throw new Error("Run not found");
+    await ctx.db.patch(run._id, {
+      status: args.status,
+      outputJson: args.outputJson,
+      error: args.error,
+      updatedAt: args.updatedAt,
+    });
+    return { ok: true };
+  },
+});
+
 export const _setIntentSubmitted = internalMutation({
   args: {
     intentId: v.string(),
@@ -203,6 +346,26 @@ export const _setIntentSubmitted = internalMutation({
     await ctx.db.patch(row._id, {
       status: "submitted",
       runId: args.runId,
+      updatedAt: args.updatedAt,
+    });
+    return { ok: true };
+  },
+});
+
+export const _setIntentStatus = internalMutation({
+  args: {
+    intentId: v.string(),
+    status: v.string(),
+    updatedAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("paymentIntents")
+      .withIndex("by_intent_id", (q) => q.eq("intentId", args.intentId))
+      .unique();
+    if (row === null) throw new Error("Intent not found");
+    await ctx.db.patch(row._id, {
+      status: args.status,
       updatedAt: args.updatedAt,
     });
     return { ok: true };
