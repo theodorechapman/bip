@@ -111,3 +111,28 @@ not final yet:
 - full rail settlement logic
 - hardened production auth policy
 - advanced swarm comparison dashboards
+
+
+## packaged north-star (agent self-bootstrap)
+
+bip should support a full self-bootstrap flow for any external agent:
+
+1. create agent identity + api key
+2. provision agentmail inbox
+3. provision agent wallet(s) (sol/base)
+4. fund wallet and credit ledger
+5. run signup/purchase intents (e.g. api key purchase)
+6. store credential as `secretRef` (never plaintext)
+7. if blocked, return `action_required` + real `liveSessionUrl`, then resume
+
+### target endpoints (next)
+
+- `POST /api/tools/agent_bootstrap`
+- `POST /api/tools/wallet_deposit`
+- `POST /api/tools/create_intent` (`intentType=api_key_purchase`)
+- `POST /api/tools/execute_intent`
+- `POST /api/tools/intent_resume`
+- `POST /api/tools/intent_status`
+- `POST /api/tools/run_status`
+
+this is the packaged skill positioning: **hosted agent commerce runtime**.
