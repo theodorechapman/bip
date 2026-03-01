@@ -247,6 +247,35 @@ export const createAgentmailInbox = internalAction({
       email: resolvedEmail,
     });
 
+    // Register webhook for real-time email delivery (best-effort)
+    const webhookUrl = (process.env.CONVEX_SITE_URL ?? "").trim();
+    if (webhookUrl) {
+      try {
+        const webhookResp = await fetch(
+          `${baseUrl}/v0/inboxes/${encodeURIComponent(decoded.inbox_id)}/webhooks`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              url: `${webhookUrl}/webhooks/agentmail`,
+              events: ["message.received"],
+            }),
+          },
+        );
+        if (!webhookResp.ok) {
+          const webhookBody = await webhookResp.text().catch(() => "");
+          console.warn(
+            `[agentmail] webhook registration failed (${webhookResp.status}): ${webhookBody.slice(0, 200)}`,
+          );
+        }
+      } catch (err) {
+        console.warn("[agentmail] webhook registration error:", err);
+      }
+    }
+
     return {
       inboxId: decoded.inbox_id,
       email: resolvedEmail,
@@ -323,6 +352,217 @@ export const deleteAgentmailInbox = internalAction({
       ok: true,
       inboxId: activeInboxId,
       deletedLocalRecords: cleanup.deletedLocalRecords,
+    };
+  },
+});
+
+// ── Webhook handling ───────────────────────────────────────────────
+
+export const recordWebhookMessage = internalMutation({
+  args: {
+    inboxId: v.string(),
+    messageId: v.string(),
+    fromAddress: v.union(v.string(), v.null()),
+    subject: v.union(v.string(), v.null()),
+    textBody: v.union(v.string(), v.null()),
+    htmlBody: v.union(v.string(), v.null()),
+    receivedAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    // Deduplicate by messageId (indexed)
+    const existing = await ctx.db
+      .query("agentmailWebhookMessages")
+      .withIndex("by_message_id", (q) => q.eq("messageId", args.messageId))
+      .first();
+    if (existing) {
+      return { inserted: false, id: existing._id };
+    }
+
+    const id = await ctx.db.insert("agentmailWebhookMessages", {
+      inboxId: args.inboxId,
+      messageId: args.messageId,
+      fromAddress: args.fromAddress,
+      subject: args.subject,
+      textBody: args.textBody,
+      htmlBody: args.htmlBody,
+      receivedAt: args.receivedAt,
+      processed: false,
+    });
+    return { inserted: true, id };
+  },
+});
+
+export const getUnprocessedMessages = internalQuery({
+  args: {
+    inboxId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query("agentmailWebhookMessages")
+      .withIndex("by_inbox_id_and_processed", (q) =>
+        q.eq("inboxId", args.inboxId).eq("processed", false),
+      )
+      .collect();
+  },
+});
+
+export const markMessageProcessed = internalMutation({
+  args: {
+    messageId: v.id("agentmailWebhookMessages"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.messageId, { processed: true });
+  },
+});
+
+// ── Email reading helpers ──────────────────────────────────────────
+
+type AgentmailMessage = {
+  message_id: string;
+  text?: string;
+  html?: string;
+  [key: string]: unknown;
+};
+
+function extractVerificationCode(message: AgentmailMessage): string | null {
+  let body = message.text || message.html || "";
+  // Strip HTML tags for cleaner matching
+  body = body.replace(/<[^>]+>/g, " ");
+  // Look for 4-8 digit codes — relaxed boundaries to catch codes after colons,
+  // at line boundaries, etc.
+  const match = body.match(/(?:^|\D)(\d{4,8})(?:\D|$)/);
+  return match ? match[1] : null;
+}
+
+function extractVerificationLink(message: AgentmailMessage): string | null {
+  let body = message.text || message.html || "";
+  // Decode common HTML entities
+  body = body
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+
+  const patterns = [
+    /https?:\/\/[^\s<>"]+(?:verify|confirm|activate|token|callback|auth)[^\s<>"]*/,
+    /https?:\/\/[^\s<>"]+/,
+  ];
+  for (const pattern of patterns) {
+    const match = body.match(pattern);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+export const getExistingMessageIds = internalAction({
+  args: {
+    inboxId: v.string(),
+  },
+  handler: async (_ctx, args): Promise<string[]> => {
+    const { baseUrl, apiKey } = getAgentmailConfig();
+    const response = await fetch(
+      `${baseUrl}/v0/inboxes/${encodeURIComponent(args.inboxId)}/messages`,
+      {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `AgentMail list messages failed (${response.status}): ${body.slice(0, 300)}`,
+      );
+    }
+    const data = (await response.json()) as { messages?: AgentmailMessage[] };
+    return (data.messages ?? []).map((m) => m.message_id);
+  },
+});
+
+export const pollForVerificationEmail = internalAction({
+  args: {
+    inboxId: v.string(),
+    knownMessageIds: v.array(v.string()),
+    timeoutSeconds: v.optional(v.number()),
+    pollIntervalSeconds: v.optional(v.number()),
+  },
+  handler: async (
+    _ctx,
+    args,
+  ): Promise<{
+    found: boolean;
+    verificationLink: string | null;
+    verificationCode: string | null;
+    messageId: string | null;
+    error: string | null;
+  }> => {
+    // Polling is now a fallback — the webhook handler (POST /webhooks/agentmail)
+    // is the primary path for receiving emails in real-time. This poll runs at
+    // longer intervals to catch anything the webhook might miss.
+    const timeout = args.timeoutSeconds ?? 90;
+    const pollInterval = args.pollIntervalSeconds ?? 15;
+    const knownIds = new Set(args.knownMessageIds);
+    const { baseUrl, apiKey } = getAgentmailConfig();
+    const start = Date.now();
+
+    while (Date.now() - start < timeout * 1000) {
+      const response = await fetch(
+        `${baseUrl}/v0/inboxes/${encodeURIComponent(args.inboxId)}/messages`,
+        {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        },
+      );
+      if (!response.ok) {
+        return {
+          found: false,
+          verificationLink: null,
+          verificationCode: null,
+          messageId: null,
+          error: `list messages failed (${response.status})`,
+        };
+      }
+      const data = (await response.json()) as { messages?: AgentmailMessage[] };
+      for (const msg of data.messages ?? []) {
+        if (!knownIds.has(msg.message_id)) {
+          // Fetch full message body
+          const fullResp = await fetch(
+            `${baseUrl}/v0/inboxes/${encodeURIComponent(args.inboxId)}/messages/${encodeURIComponent(msg.message_id)}`,
+            {
+              headers: { Authorization: `Bearer ${apiKey}` },
+            },
+          );
+          if (!fullResp.ok) {
+            return {
+              found: true,
+              verificationLink: null,
+              verificationCode: null,
+              messageId: msg.message_id,
+              error: `fetch message failed (${fullResp.status})`,
+            };
+          }
+          const fullMsg = (await fullResp.json()) as AgentmailMessage;
+          const link = extractVerificationLink(fullMsg);
+          const code = extractVerificationCode(fullMsg);
+          return {
+            found: true,
+            verificationLink: link,
+            verificationCode: code,
+            messageId: msg.message_id,
+            error: null,
+          };
+        }
+      }
+
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      console.log(`[agentmail] waiting for verification email... (${elapsed}s)`);
+      await new Promise((resolve) => setTimeout(resolve, pollInterval * 1000));
+    }
+
+    return {
+      found: false,
+      verificationLink: null,
+      verificationCode: null,
+      messageId: null,
+      error: `timed out after ${timeout}s`,
     };
   },
 });
