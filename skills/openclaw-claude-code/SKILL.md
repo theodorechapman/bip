@@ -1,72 +1,223 @@
 ---
-name: openclaw-claude-code
-description: Use this skill when OpenClaw or Claude Code needs to install the BIP CLI, authenticate with invite code + hCaptcha, and call the CLI tool interface (`user retrieve`, `create_agentmail`, `delete_agentmail`, `rent_phone`, `release_phone`).
+name: bip
+version: 2.0.0
+description: "Agent commerce runtime. Authenticate, fund a wallet, buy gift cards, purchase API keys, bootstrap accounts — all via HTTP. No CLI install needed."
+tags: [agents, commerce, payments, x402, gift-cards, api-keys, automation]
 ---
 
-# Openclaw Claude Code
+# bip — agent commerce runtime
 
-Install and operate the BIP CLI from an agent session.
+bip lets your agent authenticate, hold funds, and execute paid intents (gift cards, API keys, account bootstraps) via HTTP calls. no SDK, no CLI install — just curl.
 
-## 1) Install
+**base url:** `https://enduring-rooster-593.convex.site`
 
-```bash
-curl -fsSL https://exciting-stingray-685.convex.site/cli/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+---
 
-## 2) Configure And Authenticate
+## step 1: authenticate
 
 ```bash
-bip config:set-base-url --url https://exciting-stingray-685.convex.site
-bip consent accept
-bip login --invite-code <invite-code>
+TOKEN=$(curl -s -X POST "$BIP_BASE/auth/login" \
+  -H "content-type: application/json" \
+  -H "x-agent-id: agent-$(date +%s)" \
+  -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
+  | jq -r '.accessToken')
 ```
 
-The `login` command prints a captcha URL to stdout then blocks while it
-polls for completion. Tell the user to open the URL and solve the hCaptcha.
-Once solved, the CLI automatically detects it and completes login — no
-copy-paste required. Set a 5-minute timeout on this command since it
-blocks until the human solves the captcha.
+response:
+```json
+{
+  "accessToken": "at_...",
+  "expiresAt": 1772444649,
+  "maxApiCalls": 100,
+  "remainingApiCalls": 100
+}
+```
 
-With env var:
+save the `accessToken`. all subsequent calls need `Authorization: Bearer $TOKEN`.
+
+---
+
+## step 2: check available offerings
 
 ```bash
-export BIP_INVITE_CODE="<invite-code>"
-bip login
+curl -s -X POST "$BIP_BASE/api/tools/offering_list" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq '.offerings'
 ```
 
-## 3) Use Tools
+current offerings:
+| offering | intentType | provider | max per intent |
+|---|---|---|---|
+| `giftcard.bitrefill.buy` | `giftcard_purchase` | bitrefill | $250 |
+| `apikey.provider.buy` | `api_key_purchase` | openrouter | $50 |
+| `account.bootstrap` | `account_bootstrap` | bitrefill, x, shopify | $25 |
 
-After login:
+---
+
+## step 3: get wallet deposit address
 
 ```bash
-bip user retrieve
-bip create_agentmail --email <email>
-bip delete_agentmail --inbox-id <inbox-id>
-bip rent_phone [--area-code <areaCode>]
-bip release_phone --number-id <number-id>
+curl -s -X POST "$BIP_BASE/api/tools/wallet_deposit_address" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq .
 ```
 
-- `user retrieve`: returns agent identity and remaining API calls.
-- `create_agentmail`: creates an inbox, returns `inboxId`, `email`, metadata.
-- `delete_agentmail`: deletes an inbox by `inboxId`.
-- `rent_phone`: rents a dedicated US phone number via JoltSMS. Optionally pass a 3-digit area code.
-- `release_phone`: releases this agent's active phone number by `numberId`.
-- One active inbox per agent. Delete first before creating a new one.
-- One active phone number per agent. Release first before renting a new one.
-- AgentMail free tier: 3 global active inboxes. Delete test inboxes after use.
+response:
+```json
+{
+  "ok": true,
+  "chain": "solana",
+  "address": "97QAuw7xeKRd6ZQkqWvRoLQbSzK4uFYtXkrhBLhJPgts",
+  "memo": "fund_...",
+  "reference": "fund_..."
+}
+```
 
-## 4) Cleanup
+send SOL to the address. include the memo for faster matching.
+
+---
+
+## step 4: create an intent
 
 ```bash
-bip uninstall
+# gift card
+curl -s -X POST "$BIP_BASE/api/tools/create_intent" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "intentType": "giftcard_purchase",
+    "provider": "bitrefill",
+    "task": "buy $5 Amazon gift card",
+    "budgetUsd": 5,
+    "rail": "auto"
+  }' | jq .
+
+# API key
+curl -s -X POST "$BIP_BASE/api/tools/create_intent" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "intentType": "api_key_purchase",
+    "provider": "openrouter",
+    "task": "purchase OpenRouter API credits",
+    "budgetUsd": 10,
+    "rail": "auto"
+  }' | jq .
 ```
 
-Logs out, removes all config/credentials, and deletes the CLI binary.
+response:
+```json
+{
+  "approvalRequired": false,
+  "intentId": "pi_...",
+  "status": "approved"
+}
+```
 
-## 5) Error Contract
+save the `intentId`.
 
-- Creating a second inbox: `Agent already has an active inbox`
-- Deleting wrong inbox: `inboxId does not match this agent's active inbox`
-- Renting a second phone: `Agent already has an active phone number`
-- Releasing wrong phone: `numberId does not match this agent's active phone number`
+---
+
+## step 5: sync funding (after sending SOL)
+
+```bash
+curl -s -X POST "$BIP_BASE/api/tools/funding_sync" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq .
+```
+
+call this after you've sent SOL to the deposit address. it syncs the on-chain balance with your bip account.
+
+---
+
+## step 6: execute the intent
+
+```bash
+curl -s -X POST "$BIP_BASE/api/tools/execute_intent" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-idempotency-key: exec-$INTENT_ID-1" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT_ID\"}" | jq .
+```
+
+this triggers the actual purchase. bip handles browser automation, checkout, and fulfillment.
+
+if status comes back `action_required`, call `intent_resume` after the required action is complete.
+
+---
+
+## step 7: check status + results
+
+```bash
+# intent status (includes fulfillment artifacts)
+curl -s -X POST "$BIP_BASE/api/tools/intent_status" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT_ID\"}" | jq .
+
+# overall spend summary
+curl -s -X POST "$BIP_BASE/api/tools/spend_summary" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq .
+```
+
+---
+
+## full endpoint reference
+
+| method | endpoint | description |
+|---|---|---|
+| POST | `/auth/login` | authenticate, get access token |
+| POST | `/api/tools/offering_list` | list available offerings + policies |
+| POST | `/api/tools/wallet_deposit_address` | get SOL deposit address |
+| POST | `/api/tools/funding_sync` | sync on-chain funding to account |
+| POST | `/api/tools/create_intent` | create a purchase intent |
+| POST | `/api/tools/approve_intent` | manually approve an intent (if required) |
+| POST | `/api/tools/execute_intent` | execute an approved + funded intent |
+| POST | `/api/tools/intent_resume` | resume after action_required |
+| POST | `/api/tools/intent_status` | check intent status + artifacts |
+| POST | `/api/tools/run_status` | check execution run status |
+| POST | `/api/tools/spend_summary` | ledger summary of all spending |
+
+---
+
+## common flows
+
+### buy a gift card
+```
+auth/login → wallet_deposit_address → [fund wallet] → funding_sync → create_intent(giftcard_purchase) → execute_intent → intent_status
+```
+
+### get an API key
+```
+auth/login → wallet_deposit_address → [fund wallet] → funding_sync → create_intent(api_key_purchase) → execute_intent → intent_status
+```
+
+### bootstrap an account
+```
+auth/login → create_intent(account_bootstrap) → execute_intent → intent_status
+```
+
+---
+
+## error handling
+
+- `"error": "Missing bearer token"` — token expired or not included. re-authenticate.
+- `"fundingStatus": "not_funded"` — wallet not funded. send SOL and call funding_sync.
+- `"status": "action_required"` — human action needed (e.g. captcha). check intent_status for instructions, then call intent_resume.
+- idempotency: always include `x-idempotency-key` on execute_intent to prevent double-charges.
+
+---
+
+## important notes
+
+- all money is real. intents spend actual funds.
+- wallet is Solana-based. send SOL to the deposit address.
+- gift cards are purchased via Bitrefill. fulfillment artifacts include codes/refs.
+- API keys are provisioned via browser automation (OpenRouter signup flow).
+- policy caps are enforced server-side. you cannot exceed max budget per intent or per day.
+- access tokens expire in 24h with a 100 API call limit.
