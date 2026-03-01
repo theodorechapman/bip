@@ -499,6 +499,106 @@ http.route({
   }),
 });
 
+
+http.route({
+  path: "/api/tools/agent_bootstrap",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "agent_bootstrap");
+      if (!auth.ok) return auth.response;
+      const body = await req.json().catch(() => ({}));
+      const payload = body as { emailPrefix?: unknown; chain?: unknown };
+      const chain = typeof payload.chain === "string" ? payload.chain : "solana";
+
+      // best-effort agentmail provisioning
+      let inbox: unknown = null;
+      const email = `${typeof payload.emailPrefix === "string" && payload.emailPrefix.length > 0 ? payload.emailPrefix : auth.session.agentId}@agentmail.local`;
+      try {
+        inbox = await ctx.runAction(internal.agentmail.createAgentmailInbox, {
+          userId: auth.session.userId,
+          requestedEmail: email,
+        });
+      } catch (_e) {
+        inbox = { ok: false, error: "agentmail_unavailable" };
+      }
+
+      const walletAddress = `agt_${chain}_${auth.session.agentId}`;
+      const wallet = await ctx.runMutation(internal.payments.registerWallet, {
+        userId: auth.session.userId,
+        chain,
+        address: walletAddress,
+        label: "bootstrap",
+      });
+
+      return json(200, {
+        ok: true,
+        agentId: auth.session.agentId,
+        userId: auth.session.userId,
+        inbox,
+        wallet,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/intent_resume",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "intent_resume");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
+      if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
+      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      if (intent === null || intent.userId !== auth.session.userId) return json(404, { error: "intent not found" });
+      const out = await ctx.runAction(internal.payments.executeIntent, {
+        intentId: payload.intentId,
+        apiKey:
+          (typeof payload.browserUseApiKey === "string" ? payload.browserUseApiKey.trim() : "") ||
+          (req.headers.get("x-browser-use-api-key") ?? "").trim() ||
+          (process.env.BROWSER_USE_API_KEY ?? "").trim() ||
+          undefined,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/secrets_get",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "secrets_get");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { secretRef?: unknown };
+      if (typeof payload.secretRef !== "string") return json(400, { error: "secretRef is required" });
+      const row = await ctx.runQuery(internal.payments._getSecretForUser, {
+        userId: auth.session.userId,
+        secretRef: payload.secretRef,
+      });
+      if (row === null) return json(404, { error: "secret not found" });
+      return json(200, {
+        secretRef: row.secretRef,
+        provider: row.provider ?? null,
+        secretType: row.secretType,
+        // keep explicit so caller knows this is sensitive output
+        secretValue: row.secretValue,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
 http.route({
   path: "/api/tools/create_intent",
   method: "POST",

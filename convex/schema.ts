@@ -109,6 +109,18 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_intent_id_and_created_at", ["intentId", "createdAt"]),
 
+  agentSecrets: defineTable({
+    secretRef: v.string(),
+    userId: v.id("users"),
+    intentId: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    secretType: v.string(),
+    secretValue: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_secret_ref", ["secretRef"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
   runs: defineTable({
     runId: v.string(),
     intentId: v.string(),

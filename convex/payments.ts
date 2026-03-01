@@ -174,11 +174,22 @@ function outputSuggestsManualIntervention(output: unknown): boolean {
     t.includes("need to be logged") ||
     t.includes("sign-in") ||
     t.includes("sign in") ||
+    t.includes("requires a login") ||
     t.includes("captcha") ||
     t.includes("2fa") ||
     t.includes("two-factor") ||
     t.includes("verification code")
   );
+}
+
+function extractLikelyApiKey(output: unknown): string | null {
+  if (typeof output !== "string") return null;
+  const patterns = [/(sk-[A-Za-z0-9_\-]{12,})/, /(or-[A-Za-z0-9_\-]{12,})/, /(rk_[A-Za-z0-9_\-]{12,})/];
+  for (const p of patterns) {
+    const m = output.match(p);
+    if (m && m[1]) return m[1];
+  }
+  return null;
 }
 
 export const registerWallet = internalMutation({
@@ -581,6 +592,24 @@ export const executeIntent = internalAction({
     });
 
     if (intent.intentType === "api_key_purchase") {
+      let credential: { type: string; provider: string; secretRef: string } | null = null;
+      if (!handoffNeeded) {
+        const extracted = extractLikelyApiKey(buResult.output);
+        const secretRef = randomId("sec");
+        await ctx.runMutation(payments._putSecret, {
+          secretRef,
+          userId: intent.userId,
+          intentId: intent.intentId,
+          provider: intent.provider ?? undefined,
+          secretType: "api_key",
+          secretValue: extracted ?? "PENDING_CAPTURE",
+        });
+        credential = {
+          type: "api_key",
+          provider: intent.provider ?? "unknown",
+          secretRef,
+        };
+      }
       return {
         runId,
         status: handoffNeeded ? "action_required" : "ok",
@@ -588,13 +617,7 @@ export const executeIntent = internalAction({
         output: buResult.output ?? null,
         traceId,
         handoffUrl,
-        credential: handoffNeeded
-          ? null
-          : {
-              type: "api_key",
-              provider: intent.provider ?? "unknown",
-              secretRef: randomId("sec"),
-            },
+        credential,
       };
     }
 
@@ -756,6 +779,41 @@ export const _settleHeldFundsForIntent = internalMutation({
     await ctx.db.patch(account._id, { heldCents: held, updatedAt: ts });
     await ctx.db.insert("ledgerEntries", { entryId: randomId("le"), userId: args.userId, intentId: args.intentId, type: "debit_settlement", amountCents: -amt, balanceAfterAvailableCents: account.availableCents, balanceAfterHeldCents: held, refType: args.refType, refId: args.refId, createdAt: ts });
     return { ok: true, availableCents: account.availableCents, heldCents: held };
+  },
+});
+
+export const _putSecret = internalMutation({
+  args: {
+    secretRef: v.string(),
+    userId: v.id("users"),
+    intentId: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    secretType: v.string(),
+    secretValue: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("agentSecrets", {
+      secretRef: args.secretRef,
+      userId: args.userId,
+      intentId: args.intentId,
+      provider: args.provider,
+      secretType: args.secretType,
+      secretValue: args.secretValue,
+      createdAt: now(),
+    });
+    return { ok: true, secretRef: args.secretRef };
+  },
+});
+
+export const _getSecretForUser = internalQuery({
+  args: { userId: v.id("users"), secretRef: v.string() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("agentSecrets")
+      .withIndex("by_secret_ref", (q) => q.eq("secretRef", args.secretRef))
+      .unique();
+    if (row === null || row.userId !== args.userId) return null;
+    return row;
   },
 });
 
