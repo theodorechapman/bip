@@ -1,0 +1,189 @@
+/* ─── Geist Sans (variable) ─────────────────────────────────────────────── */
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('/fonts/Geist-ItalicVariable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* ─── Geist Mono (variable) ─────────────────────────────────────────────── */
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ─── Geist Pixel (5 variants — match tailwind names exactly) ───────────── */
+@font-face {
+  font-family: 'Geist Pixel Square';
+  src: url('/fonts/GeistPixel-Square.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Pixel Grid';
+  src: url('/fonts/GeistPixel-Grid.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Pixel Circle';
+  src: url('/fonts/GeistPixel-Circle.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Pixel Triangle';
+  src: url('/fonts/GeistPixel-Triangle.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Pixel Line';
+  src: url('/fonts/GeistPixel-Line.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Global noise overlay ─────────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #07080A; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+
+/* ─── Base resets ───────────────────────────────────────────────────────── */
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Geist Sans', sans-serif;
+  background: #07080A;
+  color: #F0EFE9;
+}
+
+.font-pixel         { font-family: 'Geist Pixel Square',   'Geist Mono', monospace; }
+.font-pixel-grid    { font-family: 'Geist Pixel Grid',     'Geist Mono', monospace; }
+.font-pixel-circle  { font-family: 'Geist Pixel Circle',   'Geist Mono', monospace; }
+.font-pixel-tri     { font-family: 'Geist Pixel Triangle', 'Geist Mono', monospace; }
+.font-pixel-line    { font-family: 'Geist Pixel Line',     'Geist Mono', monospace; }
+
+pre,
+code,
+.font-mono {
+  font-family: 'Geist Pixel Square', 'Geist Mono', monospace;
+}
+
+/* ─── Code token colors (retro dark) ────────────────────────────────────── */
+.token-comment  { color: #3D5A45; font-style: italic; }
+
+/* ─── Navbar morph ──────────────────────────────────────────────────────── */
+.nav-scrolled {
+  background: rgba(7, 8, 10, 0.85) !important;
+  backdrop-filter: blur(24px) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* ─── Magnetic button ───────────────────────────────────────────────────── */
+.btn-magnetic {
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.25s ease;
+}
+.btn-magnetic:hover { transform: scale(1.04); }
+.btn-magnetic:active { transform: scale(0.97); }
+
+/* ─── Slide-fill button ─────────────────────────────────────────────────── */
+.btn-slide {
+  position: relative;
+  overflow: hidden;
+}
+.btn-slide::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateX(-100%);
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-slide:hover::before { transform: translateX(0); }
+
+/* ─── Marquee for powered by logos ─────────────────────────────────────── */
+.marquee {
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+}
+
+.marquee-track {
+  display: inline-flex;
+  width: max-content;
+  animation: marquee-scroll 18s linear infinite;
+  gap: 0.4rem;
+}
+
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* ─── Card hover ────────────────────────────────────────────────────────── */
+.card-lift {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.35s ease;
+}
+.card-lift:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+}
+
+/* ─── Protocol sticky stack ─────────────────────────────────────────────── */
+.protocol-card {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Code syntax colours ───────────────────────────────────────────────── */
+.token-keyword  { color: #C792EA; }
+.token-fn       { color: #82AAFF; }
+.token-string   { color: #C3E88D; }
+.token-param    { color: #FFCB6B; }
+.token-comment  { color: #546E7A; font-style: italic; }
+.token-operator { color: #89DDFF; }
+.token-punct    { color: #BABED8; }
+.token-val      { color: #F78C6C; }
+
+/* ─── Email artifact fade-in ────────────────────────────────────────────── */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── SVG stroke dash animation ─────────────────────────────────────────── */
+@keyframes dash {
+  to { stroke-dashoffset: -20; }
+}
