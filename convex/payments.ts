@@ -25,14 +25,14 @@ function getMinBudgetUsd(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
 }
 
-async function callBrowserUseTask(task: string): Promise<{
+async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promise<{
   ok: boolean;
   taskId?: string;
   output?: unknown;
   raw?: unknown;
   error?: string;
 }> {
-  const apiKey = process.env.BROWSER_USE_API_KEY?.trim();
+  const apiKey = (apiKeyOverride ?? process.env.BROWSER_USE_API_KEY ?? "").trim();
   if (!apiKey) {
     return { ok: false, error: "BROWSER_USE_API_KEY not configured" };
   }
@@ -230,7 +230,7 @@ export const getIntentEvents = internalQuery({
 });
 
 export const executeIntent = internalAction({
-  args: { intentId: v.string() },
+  args: { intentId: v.string(), apiKey: v.optional(v.string()) },
   handler: async (ctx, args): Promise<any> => {
     const payments: any = (internal as any).payments;
     const intent = await ctx.runQuery(payments.getIntent, { intentId: args.intentId });
@@ -325,7 +325,7 @@ export const executeIntent = internalAction({
     });
 
     const buTask = `[rail=${resolvedRail}] ${intent.task}`;
-    const buResult = await callBrowserUseTask(buTask);
+    const buResult = await callBrowserUseTask(buTask, args.apiKey);
     const doneTs = now();
 
     if (!buResult.ok) {

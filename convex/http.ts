@@ -492,7 +492,7 @@ http.route({
       const auth = await authenticateToolCall(ctx, req, "approve_intent");
       if (!auth.ok) return auth.response;
       const body = await req.json();
-      const payload = body as { intentId?: unknown };
+      const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
       const out = await ctx.runMutation(internal.payments.approveIntent, {
         intentId: payload.intentId,
@@ -513,14 +513,17 @@ http.route({
       const auth = await authenticateToolCall(ctx, req, "execute_intent");
       if (!auth.ok) return auth.response;
       const body = await req.json();
-      const payload = body as { intentId?: unknown };
+      const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
       const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
       if (intent === null || intent.userId !== auth.session.userId) {
         return json(404, { error: "intent not found" });
       }
+      const apiKeyFromBody = typeof payload.browserUseApiKey === "string" ? payload.browserUseApiKey.trim() : "";
+      const apiKeyFromHeader = (req.headers.get("x-browser-use-api-key") ?? "").trim();
       const out = await ctx.runAction(internal.payments.executeIntent, {
         intentId: payload.intentId,
+        apiKey: apiKeyFromBody || apiKeyFromHeader || (process.env.BROWSER_USE_API_KEY ?? "").trim() || undefined,
       });
       return json(200, out);
     } catch (error) {
