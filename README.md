@@ -145,6 +145,17 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 - `run_status --run-id <runId>`
 - `logout`
 
+## Tool API endpoints
+
+- `POST /api/tools/offering_list` (phase-1 static offerings + effective policy)
+- `POST /api/tools/create_intent` (policy-validated for phase-1 when `intentType` + `provider` are set)
+- `POST /api/tools/approve_intent`
+- `POST /api/tools/execute_intent`
+- `POST /api/tools/intent_resume`
+- `POST /api/tools/intent_status` (now includes `holdAmountCents`, `settledAmountCents`, `releasedAmountCents`, `fundingStatus`)
+- `POST /api/tools/run_status`
+- `POST /api/tools/spend_summary` (per-agent funded/held/settled + totals by provider and intent type)
+
 ### Payments execution env
 
 For live Browser Use-backed intent execution:
@@ -182,6 +193,9 @@ What it covers:
 - `create_agentmail` and `delete_agentmail`
 - one-active-inbox-per-agent enforcement
 - CLI flow (`consent`, `login`, tool calls)
+- phase-1 offering registry endpoint
+- create-intent policy enforcement (allowlist + caps)
+- per-agent spend summary totals
 
 The test harness uses local mock providers for hCaptcha and AgentMail.
 It simulates AgentMail free-tier behavior with a cap of `3` active inboxes and validates that deleting an inbox frees a slot.
@@ -195,3 +209,12 @@ set either/both to mirror run lifecycle events externally:
 - `HUD_TRACE_URL` (+ optional `HUD_API_KEY`)
 
 payload includes `traceId`, `runId`, `intentId`, phase (`started|rail_selected|failed|confirmed`), status, rail, task metadata, and timing fields.
+
+## Phase-1 offering policy
+
+- Offering policies are persisted in `offeringPolicies` and auto-seeded from `OFFERINGS.md` phase-1 defaults on first use.
+- `create_intent` enforces:
+  - offering registry match on (`intentType`, `provider`)
+  - provider allowlist per offering policy
+  - per-intent budget cap and per-day budget cap
+- Legacy mode is preserved when both `intentType` and `provider` are omitted.

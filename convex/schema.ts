@@ -81,11 +81,13 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_entry_id", ["entryId"])
+    .index("by_intent_id_and_created_at", ["intentId", "createdAt"])
     .index("by_user_id_and_created_at", ["userId", "createdAt"]),
 
   paymentIntents: defineTable({
     userId: v.id("users"),
     intentId: v.string(),
+    offeringId: v.optional(v.union(v.string(), v.null())),
     intentType: v.optional(v.union(v.string(), v.null())),
     provider: v.optional(v.union(v.string(), v.null())),
     metadataJson: v.optional(v.union(v.string(), v.null())),
@@ -101,6 +103,19 @@ export default defineSchema({
   })
     .index("by_intent_id", ["intentId"])
     .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
+  offeringPolicies: defineTable({
+    offeringId: v.string(),
+    intentType: v.string(),
+    providerAllowlist: v.array(v.string()),
+    maxBudgetCentsPerIntent: v.number(),
+    maxBudgetCentsPerDay: v.number(),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_offering_id", ["offeringId"])
+    .index("by_intent_type", ["intentType"]),
 
   paymentEvents: defineTable({
     intentId: v.string(),

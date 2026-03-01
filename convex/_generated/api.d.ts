@@ -11,6 +11,7 @@
 import type * as agentmail from "../agentmail.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
+import type * as offerings from "../offerings.js";
 import type * as payments from "../payments.js";
 import type * as publicCliAssets from "../publicCliAssets.js";
 
@@ -24,6 +25,7 @@ declare const fullApi: ApiFromModules<{
   agentmail: typeof agentmail;
   auth: typeof auth;
   http: typeof http;
+  offerings: typeof offerings;
   payments: typeof payments;
   publicCliAssets: typeof publicCliAssets;
 }>;

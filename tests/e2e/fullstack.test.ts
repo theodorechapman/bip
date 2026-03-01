@@ -395,6 +395,11 @@ function stopMockProviders(): void {
 
 async function configureConvexTestEnv(): Promise<void> {
   await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "AUTH_BYPASS", "false"],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
     ["bunx", "convex", "env", "set", "HCAPTCHA_SECRET_KEY", HCAPTCHA_SECRET],
     20,
     500,
@@ -697,6 +702,137 @@ describe("Auth + Tool API", () => {
     );
     expect(afterLogout.status).toBe(401);
     expect(afterLogout.json.error).toBe("Invalid or expired access token");
+  });
+
+  test("returns phase-1 offering registry", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const response = await postJson(
+      "/api/tools/offering_list",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(response.status).toBe(200);
+    const offerings = response.json.offerings as Array<Record<string, unknown>>;
+    expect(Array.isArray(offerings)).toBe(true);
+    expect(offerings.length).toBeGreaterThanOrEqual(3);
+    const ids = offerings.map((item) => `${item.offeringId ?? ""}`);
+    expect(ids).toContain("giftcard.bitrefill.buy");
+    expect(ids).toContain("apikey.provider.buy");
+    expect(ids).toContain("account.bootstrap");
+  });
+
+  test("enforces create_intent offering policy pass/fail", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const allowed = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy a gift card and return the code",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "bitrefill",
+      },
+      { token: auth.accessToken },
+    );
+    expect(allowed.status).toBe(200);
+    expect(typeof allowed.json.intentId).toBe("string");
+
+    const disallowedProvider = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy a gift card and return the code",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "not-allowed-provider",
+      },
+      { token: auth.accessToken },
+    );
+    expect(disallowedProvider.status).toBe(403);
+    expect(disallowedProvider.json.code).toBe("offering_not_found");
+
+    const overBudget = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy api key",
+        budgetUsd: 100,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+      },
+      { token: auth.accessToken },
+    );
+    expect(overBudget.status).toBe(403);
+    expect(overBudget.json.code).toBe("budget_cap_exceeded_per_intent");
+  });
+
+  test("returns per-agent spend summary totals by provider and intentType", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const deposit = await postJson(
+      "/api/tools/wallet_deposit",
+      { amountCents: 5_000, refType: "test", refId: "seed-funds" },
+      { token: auth.accessToken },
+    );
+    expect(deposit.status).toBe(200);
+    expect(deposit.json.ok).toBe(true);
+
+    const firstIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "giftcard test",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "bitrefill",
+      },
+      { token: auth.accessToken },
+    );
+    expect(firstIntent.status).toBe(200);
+
+    const secondIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "api key test",
+        budgetUsd: 100,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+      },
+      { token: auth.accessToken },
+    );
+    expect(secondIntent.status).toBe(403);
+    const secondIntentAllowed = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "api key test",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+      },
+      { token: auth.accessToken },
+    );
+    expect(secondIntentAllowed.status).toBe(200);
+
+    const summary = await postJson(
+      "/api/tools/spend_summary",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(summary.status).toBe(200);
+    expect(summary.json.totalFunded).toBe(5_000);
+    expect(summary.json.totalHeld).toBe(0);
+    expect(summary.json.totalSettled).toBe(0);
+
+    const byProvider = summary.json.totalsByProvider as Record<string, any>;
+    expect(byProvider.bitrefill.totalBudgetCents).toBe(1_000);
+    expect(byProvider.openrouter.totalBudgetCents).toBe(800);
+
+    const byIntentType = summary.json.totalsByIntentType as Record<string, any>;
+    expect(byIntentType.giftcard_purchase.totalBudgetCents).toBe(1_000);
+    expect(byIntentType.api_key_purchase.totalBudgetCents).toBe(800);
   });
 });
 

@@ -41,18 +41,35 @@ TOKEN=$(curl -s -X POST "$BASE/auth/login" \
   | jq -r '.accessToken')
 
 # 2) create paid intent
+curl -s -X POST "$BASE/api/tools/offering_list" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq '.offerings'
+
+# 3) create policy-validated paid intent
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto"}' \
   | jq -r '.intentId')
 
-# 3) execute
+# 4) execute
 curl -s -X POST "$BASE/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "x-idempotency-key: exec-$INTENT-1" \
   -H "content-type: application/json" \
   -d "{\"intentId\":\"$INTENT\"}" | jq
+
+# 5) intent lifecycle + spend summary
+curl -s -X POST "$BASE/api/tools/intent_status" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT\"}" | jq '{status: .intent.status, fundingStatus, holdAmountCents, settledAmountCents, releasedAmountCents}'
+
+curl -s -X POST "$BASE/api/tools/spend_summary" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq
 ```
 
 ## expected outputs
@@ -66,15 +83,18 @@ curl -s -X POST "$BASE/api/tools/execute_intent" \
 
 - `POST /auth/login`
 - `POST /api/tools/create_intent`
+- `POST /api/tools/offering_list`
 - `POST /api/tools/approve_intent`
 - `POST /api/tools/execute_intent`
 - `POST /api/tools/intent_resume`
 - `POST /api/tools/intent_status`
 - `POST /api/tools/run_status`
+- `POST /api/tools/spend_summary`
 
 ## policy/safety
 
 - provider allowlist enforced
+- offering registry and policy caps enforced on `create_intent` for phase-1 offerings
 - idempotency required on execute
 - spend caps + rate limits should be enforced
 - secrets return by reference (`secretRef`), not plaintext by default

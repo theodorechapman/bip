@@ -444,6 +444,11 @@ TOKEN=$(curl -s -X POST "${origin}/auth/login" \
   -H "x-agent-id: agent-$(date +%s)" \
   -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' | jq -r '.accessToken')
 
+curl -s -X POST "${origin}/api/tools/offering_list" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq '.offerings'
+
 INTENT=$(curl -s -X POST "${origin}/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
@@ -454,19 +459,26 @@ curl -s -X POST "${origin}/api/tools/execute_intent" \
   -H "x-idempotency-key: exec-$INTENT-1" \
   -H "content-type: application/json" \
   -d "{\"intentId\":\"$INTENT\"}" | jq
+
+curl -s -X POST "${origin}/api/tools/spend_summary" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq
 \`\`\`
 
 ## core endpoints
 - POST /auth/login
+- POST /api/tools/offering_list
 - POST /api/tools/create_intent
 - POST /api/tools/approve_intent
 - POST /api/tools/execute_intent
 - POST /api/tools/intent_resume
 - POST /api/tools/intent_status
 - POST /api/tools/run_status
+- POST /api/tools/spend_summary
 
 ## notes
-- provider allowlist + idempotency enforced
+- offering registry + policy caps + idempotency enforced
 - outputs include run/trace ids and fulfillment artifacts
 - secrets are returned by reference (secretRef)
 `;

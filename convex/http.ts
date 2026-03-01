@@ -8,6 +8,7 @@ import {
   renderPublicCliScript,
   renderSkillMarkdown,
 } from "./publicCliAssets";
+import { PHASE1_OFFERINGS, PHASE1_POLICY_DEFAULTS } from "./offerings";
 
 const http = httpRouter();
 const DEFAULT_HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify";
@@ -649,6 +650,45 @@ http.route({
 });
 
 http.route({
+  path: "/api/tools/offering_list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "offering_list");
+      if (!auth.ok) return auth.response;
+      const payments: any = (internal as any).payments;
+      await ctx.runMutation(payments.seedPhase1OfferingPolicies, {});
+      const rows = await ctx.runQuery(payments.listOfferingPolicies, {});
+      const byOfferingId = new Map<string, any>(
+        (rows as Array<any>).map((row) => [row.offeringId, row]),
+      );
+      const offerings = PHASE1_OFFERINGS.map((offering) => {
+        const defaultPolicy = PHASE1_POLICY_DEFAULTS.find(
+          (item) => item.offeringId === offering.offeringId,
+        );
+        const persisted = byOfferingId.get(offering.offeringId);
+        const policy = persisted ?? defaultPolicy ?? null;
+        return {
+          ...offering,
+          policy:
+            policy === null
+              ? null
+              : {
+                  enabled: Boolean(policy.enabled),
+                  providerAllowlist: policy.providerAllowlist,
+                  maxBudgetCentsPerIntent: policy.maxBudgetCentsPerIntent,
+                  maxBudgetCentsPerDay: policy.maxBudgetCentsPerDay,
+                },
+        };
+      });
+      return json(200, { offerings });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/create_intent",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
@@ -670,15 +710,42 @@ http.route({
       const intentType = typeof payload.intentType === "string" ? payload.intentType : undefined;
       const provider = typeof payload.provider === "string" ? payload.provider : undefined;
       const metadataJson = payload.metadata !== undefined ? JSON.stringify(payload.metadata) : undefined;
+      let offeringId: string | undefined;
+
+      const payments: any = (internal as any).payments;
+      await ctx.runMutation(payments.seedPhase1OfferingPolicies, {});
+
+      const hasIntentType = intentType !== undefined && intentType.trim().length > 0;
+      const hasProvider = provider !== undefined && provider.trim().length > 0;
+      if (hasIntentType !== hasProvider) {
+        return json(400, {
+          error: "intentType_and_provider_must_be_provided_together",
+          detail: "Provide both intentType and provider, or omit both for legacy mode.",
+        });
+      }
+      if (hasIntentType && hasProvider) {
+        const validation = await ctx.runQuery(payments.validateIntentAgainstPolicy, {
+          userId: auth.session.userId,
+          intentType,
+          provider,
+          budgetUsd,
+        });
+        if (!validation.ok) {
+          return json(403, validation);
+        }
+        offeringId = validation.offeringId;
+      }
+
       const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
       if (provider && !allowedProviders.includes(provider.toLowerCase())) {
         return json(403, { error: "provider_not_allowed", provider, allowedProviders });
       }
-      const out = await ctx.runMutation(internal.payments.createIntent, {
+      const out = await ctx.runMutation(payments.createIntent, {
         userId: auth.session.userId,
         task: payload.task,
         budgetUsd,
         rail,
+        offeringId,
         intentType,
         provider,
         metadataJson,
@@ -773,8 +840,31 @@ http.route({
       if (intent === null || intent.userId !== auth.session.userId) {
         return json(404, { error: "intent not found" });
       }
-      const events = await ctx.runQuery(internal.payments.getIntentEvents, { intentId: payload.intentId });
-      return json(200, { intent, events });
+      const payments: any = (internal as any).payments;
+      const events = await ctx.runQuery(payments.getIntentEvents, { intentId: payload.intentId });
+      const funding = await ctx.runQuery(payments.getIntentFundingLifecycle, {
+        userId: auth.session.userId,
+        intentId: payload.intentId,
+      });
+      return json(200, { intent, events, ...funding });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/spend_summary",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "spend_summary");
+      if (!auth.ok) return auth.response;
+      const payments: any = (internal as any).payments;
+      const summary = await ctx.runQuery(payments.getSpendSummary, {
+        userId: auth.session.userId,
+      });
+      return json(200, summary);
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
