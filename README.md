@@ -179,7 +179,42 @@ export PAYMENTS_MODE="free"
 export MIN_INTENT_BUDGET_USD="1"
 ```
 
-## Treasury card ref + Solana funding flow
+## Primary MVP flow: api_key_purchase
+
+```bash
+# 1) login
+TOKEN=$(curl -s -X POST "$BASE/auth/login" \
+  -H "content-type: application/json" \
+  -H "x-agent-id: agent-$(date +%s)" \
+  -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
+  | jq -r '.accessToken')
+
+# 2) fund account
+curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq '{address, memo, reference}'
+
+curl -s -X POST "$BASE/api/tools/funding_sync" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
+
+# 3) create deterministic api_key_purchase intent
+INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"intentType":"api_key_purchase","provider":"elevenlabs","task":"create API key and return proof","budgetUsd":8,"rail":"auto","metadata":{"provider":"elevenlabs","accountEmailMode":"existing","targetProduct":"starter"}}' \
+  | jq -r '.intentId')
+
+# 4) execute
+curl -s -X POST "$BASE/api/tools/execute_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT\"}" | jq '{status, provider, traceId, proofRef, credential, artifact, handoffUrl}'
+```
+
+## Secondary flow: Treasury card ref + giftcard_purchase
 
 ```bash
 # 0) admin adds treasury card once (never send PAN/CVV in intent payloads)
@@ -252,7 +287,7 @@ What it covers:
 - one-active-inbox-per-agent enforcement
 - CLI flow (`consent`, `login`, tool calls)
 - phase-1 offering registry endpoint
-- create-intent policy enforcement (allowlist + caps)
+- create-intent policy enforcement (allowlist + caps), including `api_key_purchase` metadata contract
 - per-agent spend summary totals
 
 The test harness uses local mock providers for hCaptcha and AgentMail.
@@ -275,4 +310,9 @@ payload includes `traceId`, `runId`, `intentId`, phase (`started|rail_selected|f
   - offering registry match on (`intentType`, `provider`)
   - provider allowlist per offering policy
   - per-intent budget cap and per-day budget cap
+  - `api_key_purchase` metadata contract:
+    - `provider` (string, required)
+    - `accountEmailMode` (`agentmail|existing`, required)
+    - `targetProduct` (string, optional)
+    - `dryRun` (boolean, optional)
 - Legacy mode is preserved when both `intentType` and `provider` are omitted.

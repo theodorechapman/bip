@@ -35,7 +35,7 @@ export const PHASE1_OFFERINGS: Array<Phase1Offering> = [
   {
     offeringId: "apikey.provider.buy",
     intentType: "api_key_purchase",
-    provider: "openrouter|...",
+    provider: "openrouter|elevenlabs|...",
     rail: "auto",
     riskClass: "high",
     requiresHandoff: "often",
@@ -66,7 +66,7 @@ export const PHASE1_POLICY_DEFAULTS: Array<OfferingPolicyDefault> = [
   {
     offeringId: "apikey.provider.buy",
     intentType: "api_key_purchase",
-    providerAllowlist: ["openrouter"],
+    providerAllowlist: ["openrouter", "elevenlabs"],
     maxBudgetCentsPerIntent: 5_000,
     maxBudgetCentsPerDay: 15_000,
     enabled: true,

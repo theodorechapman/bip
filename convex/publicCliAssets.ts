@@ -433,6 +433,7 @@ agents should only need to:
 3) request intents
 
 bip handles the rest: execution orchestration, checkout/payment workflows, artifact return, tracing, and ledger audit.
+primary MVP path: api_key_purchase (giftcard_purchase is secondary).
 
 base url: \`${origin}\`
 
@@ -457,7 +458,7 @@ curl -s -X POST "${origin}/api/tools/funding_sync" \
 INTENT=$(curl -s -X POST "${origin}/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto"}' | jq -r '.intentId')
+  -d '{"intentType":"api_key_purchase","provider":"elevenlabs","task":"create API key and return proof","budgetUsd":8,"rail":"auto","metadata":{"provider":"elevenlabs","accountEmailMode":"existing","targetProduct":"starter"}}' | jq -r '.intentId')
 
 curl -s -X POST "${origin}/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \

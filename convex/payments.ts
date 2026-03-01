@@ -41,6 +41,10 @@ function isSubsidyMode(): boolean {
   return (process.env.SUBSIDY_MODE ?? "true").trim().toLowerCase() !== "false";
 }
 
+function getBrowserUseMaxSteps(): number {
+  const raw = Number(process.env.BROWSER_USE_MAX_STEPS ?? "30");
+  return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 30;
+}
 
 function getSolAutoSpendCapUsd(): number {
   const raw = Number(process.env.SOL_AUTO_SPEND_CAP_USD ?? "10");
@@ -269,7 +273,13 @@ async function emitExternalTrace(event: {
   }
 }
 
-async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promise<{
+async function callBrowserUseTask(
+  task: string,
+  apiKeyOverride?: string,
+  options?: {
+    maxSteps?: number;
+  },
+): Promise<{
   ok: boolean;
   taskId?: string;
   output?: unknown;
@@ -291,7 +301,10 @@ async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promis
       "X-Browser-Use-API-Key": apiKey,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ task }),
+    body: JSON.stringify({
+      task,
+      ...(typeof options?.maxSteps === "number" ? { maxSteps: options.maxSteps, max_steps: options.maxSteps } : {}),
+    }),
   });
 
   if (!createResp.ok) {
@@ -382,6 +395,145 @@ function buildBrowserUseHandoffUrl(taskId: string | undefined): string | null {
   return template.replaceAll("{taskId}", taskId);
 }
 
+function isValidDomain(value: string): boolean {
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value);
+}
+
+function domainMatchesProvider(candidateDomain: string, providerDomain: string): boolean {
+  const candidate = candidateDomain.toLowerCase();
+  const provider = providerDomain.toLowerCase();
+  return candidate === provider || candidate.endsWith(`.${provider}`);
+}
+
+type GiftcardExecutionMetadata = {
+  brand: string;
+  region: string;
+  amountUsd: number;
+  providerDomain: string;
+  dryRun: boolean;
+};
+
+function parseGiftcardExecutionMetadata(meta: unknown): GiftcardExecutionMetadata | null {
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+  const value = meta as Record<string, unknown>;
+  const brand = typeof value.brand === "string" ? value.brand.trim() : "";
+  const region = typeof value.region === "string" ? value.region.trim() : "";
+  const amountUsd = typeof value.amountUsd === "number" ? value.amountUsd : Number.NaN;
+  const providerDomain =
+    typeof value.providerDomain === "string"
+      ? value.providerDomain.trim().toLowerCase()
+      : "";
+  if (!brand || !region || !Number.isFinite(amountUsd) || amountUsd <= 0 || !providerDomain || !isValidDomain(providerDomain)) {
+    return null;
+  }
+  const dryRun = value.dryRun === true;
+  return {
+    brand,
+    region,
+    amountUsd,
+    providerDomain,
+    dryRun,
+  };
+}
+
+function buildDeterministicGiftcardTask(input: {
+  originalTask: string;
+  metadata: GiftcardExecutionMetadata;
+  maxSteps: number;
+  treasuryCardInstructions: string;
+}): string {
+  return [
+    `[giftcard_purchase deterministic]`,
+    `Primary objective: buy exactly ${input.metadata.brand} gift card for USD ${input.metadata.amountUsd} in region ${input.metadata.region}.`,
+    `Provider domain: ${input.metadata.providerDomain}`,
+    "",
+    "Hard constraints:",
+    `1. Start directly at https://${input.metadata.providerDomain}.`,
+    "2. Do not use search engines or query aggregators.",
+    "3. Do not click ads/sponsored links or alternate merchants.",
+    `4. Buy the exact brand "${input.metadata.brand}" and amount ${input.metadata.amountUsd} USD only.`,
+    `5. Never navigate outside ${input.metadata.providerDomain} or its subdomains.`,
+    `6. Stop after at most ${input.maxSteps} steps.`,
+    input.metadata.dryRun
+      ? "7. DRY RUN: navigation/planning only. Reach checkout and stop before submitting payment."
+      : "7. Complete purchase only if all constraints are satisfied.",
+    "",
+    "Stop conditions:",
+    "- If off-domain navigation or search behavior is required, stop and report BLOCKED: off_domain_navigation.",
+    "- If exact product/amount cannot be found on-provider, stop and report BLOCKED: exact_match_unavailable.",
+    input.metadata.dryRun
+      ? "- On reaching checkout page, return URL/title and cart summary; do not submit payment."
+      : "- On completion, return redemption details and order confirmation proof.",
+    "",
+    `Original task context: ${input.originalTask}`,
+    input.treasuryCardInstructions,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function detectOffDomainNavigation(
+  output: unknown,
+  raw: unknown,
+  providerDomain: string,
+): { reason: string; evidence: string } | null {
+  const text = `${stringifyUnknown(output)}\n${stringifyUnknown(raw)}`.toLowerCase();
+  const searchPatterns = [
+    /\bgoogle\./,
+    /\bbing\./,
+    /\bduckduckgo\./,
+    /\byahoo\./,
+    /\bsearch result/,
+    /\bused search/,
+    /\bsearch engine/,
+  ];
+  if (searchPatterns.some((pattern) => pattern.test(text))) {
+    return {
+      reason: "search_engine_navigation_detected",
+      evidence: "BrowserUse output indicates search engine usage.",
+    };
+  }
+
+  const domainMatches = text.match(/\b([a-z0-9-]+\.)+[a-z]{2,}\b/g) ?? [];
+  const uniqueDomains = new Set(domainMatches.map((value) => value.toLowerCase()));
+  const ignoredDomains = new Set(["browser-use.com", "cloud.browser-use.com"]);
+  for (const domain of uniqueDomains) {
+    if (ignoredDomains.has(domain)) continue;
+    if (domainMatchesProvider(domain, providerDomain)) continue;
+    return {
+      reason: "alternate_domain_detected",
+      evidence: `Observed non-provider domain in BrowserUse output: ${domain}`,
+    };
+  }
+  return null;
+}
+
+function extractDryRunCheckoutProof(output: unknown): {
+  reachedCheckout: boolean;
+  evidence: string;
+} {
+  const text = stringifyUnknown(output);
+  const lower = text.toLowerCase();
+  const reachedCheckout =
+    lower.includes("checkout") ||
+    lower.includes("/checkout") ||
+    lower.includes("review order") ||
+    lower.includes("payment page");
+  return {
+    reachedCheckout,
+    evidence: text.slice(0, 500),
+  };
+}
+
 function outputSuggestsManualIntervention(output: unknown): boolean {
   if (typeof output !== "string") return false;
   const t = output.toLowerCase();
@@ -407,6 +559,132 @@ function extractLikelyApiKey(output: unknown): string | null {
     if (m && m[1]) return m[1];
   }
   return null;
+}
+
+type ApiKeyPurchaseMetadata = {
+  provider: string;
+  accountEmailMode: "agentmail" | "existing";
+  targetProduct?: string;
+  dryRun?: boolean;
+};
+
+function parseApiKeyPurchaseMetadata(value: unknown): ApiKeyPurchaseMetadata | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const metadata = value as Record<string, unknown>;
+  const provider = typeof metadata.provider === "string" ? metadata.provider.trim() : "";
+  const emailMode = typeof metadata.accountEmailMode === "string"
+    ? metadata.accountEmailMode.trim().toLowerCase()
+    : "";
+  if (!provider || (emailMode !== "agentmail" && emailMode !== "existing")) return null;
+  const targetProduct =
+    typeof metadata.targetProduct === "string" && metadata.targetProduct.trim().length > 0
+      ? metadata.targetProduct.trim()
+      : undefined;
+  const dryRun = typeof metadata.dryRun === "boolean" ? metadata.dryRun : undefined;
+  return {
+    provider,
+    accountEmailMode: emailMode,
+    ...(targetProduct !== undefined ? { targetProduct } : {}),
+    ...(dryRun !== undefined ? { dryRun } : {}),
+  };
+}
+
+function getApiKeyProviderDomain(providerRaw: string): string | null {
+  const provider = normalizeLower(providerRaw);
+  if (provider === "openrouter") return "openrouter.ai";
+  if (provider === "elevenlabs") return "elevenlabs.io";
+  return null;
+}
+
+function buildApiKeyPurchaseTask(input: {
+  provider: string;
+  providerDomain: string;
+  task: string;
+  accountEmailMode: "agentmail" | "existing";
+  targetProduct?: string;
+}): string {
+  const targetProductLine = input.targetProduct
+    ? `Target product: ${input.targetProduct}`
+    : "Target product: provider default API credits/subscription flow.";
+  return [
+    `[intent=api_key_purchase] [provider=${input.provider}] [domain=${input.providerDomain}]`,
+    `Goal: ${input.task}`,
+    "Deterministic constraints:",
+    `- Navigate directly to https://${input.providerDomain} only.`,
+    "- Do not use search engines, affiliate links, or off-domain merchants.",
+    "- Stay on provider-owned pages for every step.",
+    "Execution steps:",
+    "1) Signup/login on the provider site using the approved account path.",
+    `   accountEmailMode=${input.accountEmailMode}`,
+    `2) Open billing/credits on ${input.providerDomain}.`,
+    `3) Complete credits/subscription purchase as needed. ${targetProductLine}`,
+    "4) Open API keys page and create a new key.",
+    "5) Capture proof: key creation page URL, timestamp, masked key prefix, and billing confirmation details.",
+    "Output requirements:",
+    "- Return created API key if visible.",
+    "- Return proof bundle including URL/title/timestamp and a concise audit trail.",
+  ].join("\n");
+}
+
+function buildApiKeyDryRunPlan(input: {
+  provider: string;
+  providerDomain: string;
+  accountEmailMode: "agentmail" | "existing";
+  targetProduct?: string;
+}): string {
+  return [
+    `Dry run plan for provider=${input.provider} (domain=${input.providerDomain})`,
+    "1) Login/signup on provider domain only.",
+    `2) Navigate to billing/credits and choose target product (${input.targetProduct ?? "provider default"}).`,
+    "3) Navigate to API key management and create key.",
+    "4) Capture proof artifacts (URL, timestamp, masked key prefix, billing receipt).",
+    `5) Re-run execute_intent with metadata.dryRun=false (accountEmailMode=${input.accountEmailMode}).`,
+  ].join("\n");
+}
+
+async function bestEffortValidateApiKey(input: {
+  provider: string;
+  apiKey: string;
+}): Promise<{ supported: boolean; verified: boolean; error?: string }> {
+  const provider = normalizeLower(input.provider);
+  const timeoutMs = 2_500;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    if (provider === "openrouter") {
+      const base = (process.env.OPENROUTER_API_BASE ?? "https://openrouter.ai/api/v1").trim();
+      const res = await fetch(`${base}/auth/key`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        signal: abort.signal,
+      });
+      return { supported: true, verified: res.ok, ...(res.ok ? {} : { error: `http_${res.status}` }) };
+    }
+    if (provider === "elevenlabs") {
+      const base = (process.env.ELEVENLABS_API_BASE ?? "https://api.elevenlabs.io/v1").trim();
+      const res = await fetch(`${base}/user/subscription`, {
+        method: "GET",
+        headers: {
+          "xi-api-key": input.apiKey,
+          "Content-Type": "application/json",
+        },
+        signal: abort.signal,
+      });
+      return { supported: true, verified: res.ok, ...(res.ok ? {} : { error: `http_${res.status}` }) };
+    }
+    return { supported: false, verified: false };
+  } catch (error) {
+    return {
+      supported: provider === "openrouter" || provider === "elevenlabs",
+      verified: false,
+      error: error instanceof Error ? error.message : "validator_request_failed",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type TreasuryCardSecret = {
@@ -1228,6 +1506,8 @@ export const executeIntent = internalAction({
     } catch {
       meta = null;
     }
+    const apiKeyMeta =
+      intent.intentType === "api_key_purchase" ? parseApiKeyPurchaseMetadata(meta) : null;
     if (intent.intentType === "giftcard_purchase") {
       const cardRef =
         typeof meta?.cardRef === "string" && meta.cardRef.trim().length > 0
@@ -1243,6 +1523,95 @@ export const executeIntent = internalAction({
           sensitiveTokens = [treasuryCard.pan, treasuryCard.cvv];
         }
       }
+    }
+    if (intent.intentType === "api_key_purchase" && apiKeyMeta === null) {
+      const doneTs = now();
+      await ctx.runMutation(payments._updateRun, {
+        runId,
+        status: "failed",
+        outputJson: null,
+        error: "invalid_api_key_purchase_metadata",
+        updatedAt: doneTs,
+      });
+      if (holdAmountCents > 0) {
+        await ctx.runMutation(payments._releaseHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "execution_failed",
+          refId: runId,
+        });
+      }
+      await ctx.runMutation(payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "failed",
+        updatedAt: doneTs,
+      });
+      return {
+        runId,
+        status: "failed",
+        error: "invalid_api_key_purchase_metadata",
+        traceId,
+      };
+    }
+
+    if (intent.intentType === "api_key_purchase" && apiKeyMeta?.dryRun === true) {
+      const doneTs = now();
+      const provider = intent.provider ?? apiKeyMeta.provider;
+      const providerDomain = getApiKeyProviderDomain(provider);
+      const nextAction = "Run execute_intent again with metadata.dryRun=false to perform real purchase.";
+      const reason = providerDomain === null ? "provider_domain_not_supported" : "dry_run_plan_only";
+      const plan =
+        providerDomain === null
+          ? `No deterministic domain mapping for provider=${provider}.`
+          : buildApiKeyDryRunPlan({
+              provider,
+              providerDomain,
+              accountEmailMode: apiKeyMeta.accountEmailMode,
+              targetProduct: apiKeyMeta.targetProduct,
+            });
+
+      await ctx.runMutation(payments._updateRun, {
+        runId,
+        status: "action_required",
+        outputJson: JSON.stringify({
+          provider,
+          plan,
+          reason,
+        }),
+        error: null,
+        updatedAt: doneTs,
+      });
+      if (holdAmountCents > 0) {
+        await ctx.runMutation(payments._releaseHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "dry_run_release",
+          refId: runId,
+        });
+      }
+      await ctx.runMutation(payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "action_required",
+        updatedAt: doneTs,
+      });
+      await ctx.runMutation(payments._recordEvent, {
+        intentId: intent.intentId,
+        eventType: "intent_action_required",
+        payloadJson: JSON.stringify({ runId, traceId, reason, nextAction }),
+        createdAt: doneTs,
+      });
+      return {
+        runId,
+        status: "action_required",
+        provider,
+        traceId,
+        reason,
+        nextAction,
+        handoffUrl: null,
+        output: plan,
+      };
     }
 
     // Real bitrefill adapter path (if selected)
@@ -1321,11 +1690,66 @@ export const executeIntent = internalAction({
               ? `\nBilling ZIP: ${treasuryCard.billingZip}`
               : ""
           }`;
-    const buTask = `[rail=${resolvedRail}] ${intent.task}${
+    let buTask = `[rail=${resolvedRail}] ${intent.task}${
       treasuryPaymentArtifact !== null
         ? `\n[payment_source=${treasuryPaymentArtifact.paymentSource}] [card_ref=${treasuryPaymentArtifact.cardRef}]${treasuryCardInstructions}`
         : ""
     }`;
+    if (intent.intentType === "api_key_purchase" && apiKeyMeta !== null) {
+      const provider = intent.provider ?? apiKeyMeta.provider;
+      const providerDomain = getApiKeyProviderDomain(provider);
+      if (providerDomain === null) {
+        const doneTs = now();
+        const reason = "provider_domain_not_supported";
+        const nextAction = "Use provider=openrouter or provider=elevenlabs for deterministic api_key_purchase.";
+        await ctx.runMutation(payments._updateRun, {
+          runId,
+          status: "action_required",
+          outputJson: JSON.stringify({
+            provider,
+            reason,
+          }),
+          error: null,
+          updatedAt: doneTs,
+        });
+        if (holdAmountCents > 0) {
+          await ctx.runMutation(payments._releaseHeldFundsForIntent, {
+            userId: intent.userId,
+            intentId: intent.intentId,
+            amountCents: holdAmountCents,
+            refType: "execution_failed",
+            refId: runId,
+          });
+        }
+        await ctx.runMutation(payments._setIntentStatus, {
+          intentId: intent.intentId,
+          status: "action_required",
+          updatedAt: doneTs,
+        });
+        await ctx.runMutation(payments._recordEvent, {
+          intentId: intent.intentId,
+          eventType: "intent_action_required",
+          payloadJson: JSON.stringify({ runId, traceId, reason, nextAction }),
+          createdAt: doneTs,
+        });
+        return {
+          runId,
+          status: "action_required",
+          provider,
+          traceId,
+          reason,
+          nextAction,
+          handoffUrl: null,
+        };
+      }
+      buTask = buildApiKeyPurchaseTask({
+        provider,
+        providerDomain,
+        task: intent.task,
+        accountEmailMode: apiKeyMeta.accountEmailMode,
+        targetProduct: apiKeyMeta.targetProduct,
+      });
+    }
     const buResult = await callBrowserUseTask(buTask, args.apiKey);
     const doneTs = now();
 
@@ -1341,6 +1765,10 @@ export const executeIntent = internalAction({
       const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
       const isRecoverable = (intent.intentType === "account_bootstrap" || intent.intentType === "api_key_purchase") && (buResult.error ?? "").toLowerCase().includes("timeout");
       if (isRecoverable) {
+        const nextAction =
+          intent.intentType === "api_key_purchase"
+            ? "Open handoffUrl, complete login/billing/key creation on provider domain, then resume."
+            : "Open handoffUrl and continue from the interrupted step.";
         await ctx.runMutation(payments._updateRun, {
           runId,
           status: "action_required",
@@ -1348,6 +1776,9 @@ export const executeIntent = internalAction({
             taskId: buResult.taskId ?? null,
             handoffUrl,
             raw: sanitizedRaw,
+            ...(intent.intentType === "api_key_purchase"
+              ? { nextAction, provider: intent.provider ?? null }
+              : {}),
             ...(treasuryPaymentArtifact ?? {}),
           }),
           error: sanitizedError ?? "execution_timeout",
@@ -1367,13 +1798,16 @@ export const executeIntent = internalAction({
             reason: sanitizedError ?? "execution_timeout",
             taskId: buResult.taskId ?? null,
             handoffUrl,
+            nextAction,
           }),
           createdAt: doneTs,
         });
         return {
           runId,
           status: "action_required",
+          ...(intent.intentType === "api_key_purchase" ? { provider: intent.provider ?? "unknown" } : {}),
           reason: sanitizedError ?? "execution_timeout",
+          ...(intent.intentType === "api_key_purchase" ? { nextAction } : {}),
           taskId: buResult.taskId ?? null,
           traceId,
           handoffUrl,
@@ -1578,32 +2012,73 @@ export const executeIntent = internalAction({
     });
 
     if (intent.intentType === "api_key_purchase") {
-      let credential: { type: string; provider: string; secretRef: string } | null = null;
-      if (!handoffNeeded) {
-        const extracted = extractLikelyApiKey(buResult.output);
-        const secretRef = randomId("sec");
-        await ctx.runMutation(payments._putSecret, {
-          secretRef,
-          userId: intent.userId,
-          intentId: intent.intentId,
-          provider: intent.provider ?? undefined,
-          secretType: "api_key",
-          secretValue: extracted ?? "PENDING_CAPTURE",
-        });
-        credential = {
-          type: "api_key",
-          provider: intent.provider ?? "unknown",
-          secretRef,
+      const provider = intent.provider ?? apiKeyMeta?.provider ?? "unknown";
+      const extracted = extractLikelyApiKey(buResult.output);
+      const proofRef = randomId("proof");
+      await ctx.runMutation(payments._putSecret, {
+        secretRef: proofRef,
+        userId: intent.userId,
+        intentId: intent.intentId,
+        provider,
+        secretType: "api_key_proof",
+        secretValue: JSON.stringify({
+          traceId,
+          taskId: buResult.taskId ?? null,
+          output: sanitizedOutput ?? null,
+          handoffUrl,
+          provider,
+        }),
+      });
+
+      if (handoffNeeded) {
+        const nextAction =
+          "Open handoffUrl and complete signup/login, billing/credits, key creation, then resume.";
+        return {
+          runId,
+          status: "action_required",
+          provider,
+          taskId: buResult.taskId ?? null,
+          output: sanitizedOutput ?? null,
+          traceId,
+          handoffUrl,
+          reason: "manual_steps_required",
+          nextAction,
+          proofRef,
+          ...(treasuryPaymentArtifact ?? {}),
         };
       }
+
+      const secretRef = randomId("sec");
+      await ctx.runMutation(payments._putSecret, {
+        secretRef,
+        userId: intent.userId,
+        intentId: intent.intentId,
+        provider,
+        secretType: "api_key",
+        secretValue: extracted ?? "PENDING_CAPTURE",
+      });
+
+      const validation =
+        extracted === null
+          ? { supported: false, verified: false, error: "key_not_detected" }
+          : await bestEffortValidateApiKey({ provider, apiKey: extracted });
+      const unverified = !validation.supported || !validation.verified;
       return {
         runId,
-        status: handoffNeeded ? "action_required" : "ok",
+        status: "ok",
+        provider,
         taskId: buResult.taskId ?? null,
         output: sanitizedOutput ?? null,
         traceId,
         handoffUrl,
-        credential,
+        proofRef,
+        credential: {
+          secretRef,
+        },
+        artifact: {
+          unverified,
+          keyValidation: validation,
+        },
         ...(treasuryPaymentArtifact ?? {}),
       };
     }

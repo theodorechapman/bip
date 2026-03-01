@@ -106,6 +106,171 @@ function sanitizeLabel(label: string): string {
   return normalized.length > 0 ? normalized : "card";
 }
 
+type GiftcardMetadataValidation =
+  | {
+      ok: true;
+      metadata: Record<string, unknown>;
+    }
+  | {
+      ok: false;
+      error: "invalid_giftcard_metadata";
+      detail: string;
+      missingFields: Array<string>;
+      invalidFields: Array<string>;
+};
+
+function validateGiftcardPurchaseMetadata(value: unknown): GiftcardMetadataValidation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      error: "invalid_giftcard_metadata",
+      detail:
+        "giftcard_purchase requires metadata object with brand, region, amountUsd, and providerDomain.",
+      missingFields: ["brand", "region", "amountUsd", "providerDomain"],
+      invalidFields: [],
+    };
+  }
+  const metadata = value as Record<string, unknown>;
+  const missingFields: Array<string> = [];
+  const invalidFields: Array<string> = [];
+
+  const brand = typeof metadata.brand === "string" ? metadata.brand.trim() : "";
+  if (brand.length === 0) {
+    missingFields.push("brand");
+  }
+
+  const region = typeof metadata.region === "string" ? metadata.region.trim() : "";
+  if (region.length === 0) {
+    missingFields.push("region");
+  }
+
+  const amountUsd = typeof metadata.amountUsd === "number" ? metadata.amountUsd : Number.NaN;
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
+    invalidFields.push("amountUsd");
+  }
+
+  const providerDomain =
+    typeof metadata.providerDomain === "string"
+      ? metadata.providerDomain.trim().toLowerCase()
+      : "";
+  const providerDomainOk = /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(providerDomain);
+  if (providerDomain.length === 0) {
+    missingFields.push("providerDomain");
+  } else if (!providerDomainOk) {
+    invalidFields.push("providerDomain");
+  }
+
+  if (missingFields.length > 0 || invalidFields.length > 0) {
+    return {
+      ok: false,
+      error: "invalid_giftcard_metadata",
+      detail:
+        "giftcard_purchase metadata invalid. Required: brand(string), region(string), amountUsd(number>0), providerDomain(domain).",
+      missingFields,
+      invalidFields,
+    };
+  }
+
+  return {
+    ok: true,
+    metadata: {
+      ...metadata,
+      brand,
+      region,
+      amountUsd,
+      providerDomain,
+    },
+  };
+}
+
+type ApiKeyPurchaseMetadataValidation =
+  | {
+      ok: true;
+      metadata: {
+        provider: string;
+        targetProduct?: string;
+        dryRun?: boolean;
+        accountEmailMode: "agentmail" | "existing";
+      };
+    }
+  | {
+      ok: false;
+      error: "invalid_api_key_purchase_metadata";
+      detail: string;
+      missingFields: Array<string>;
+      invalidFields: Array<string>;
+    };
+
+function validateApiKeyPurchaseMetadata(value: unknown): ApiKeyPurchaseMetadataValidation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      error: "invalid_api_key_purchase_metadata",
+      detail:
+        "api_key_purchase requires metadata object with provider(string) and accountEmailMode(agentmail|existing).",
+      missingFields: ["provider", "accountEmailMode"],
+      invalidFields: [],
+    };
+  }
+  const metadata = value as Record<string, unknown>;
+  const missingFields: Array<string> = [];
+  const invalidFields: Array<string> = [];
+
+  const provider = typeof metadata.provider === "string" ? metadata.provider.trim() : "";
+  if (provider.length === 0) {
+    missingFields.push("provider");
+  }
+
+  let targetProduct: string | undefined;
+  if (metadata.targetProduct !== undefined) {
+    if (typeof metadata.targetProduct !== "string" || metadata.targetProduct.trim().length === 0) {
+      invalidFields.push("targetProduct");
+    } else {
+      targetProduct = metadata.targetProduct.trim();
+    }
+  }
+
+  let dryRun: boolean | undefined;
+  if (metadata.dryRun !== undefined) {
+    if (typeof metadata.dryRun !== "boolean") {
+      invalidFields.push("dryRun");
+    } else {
+      dryRun = metadata.dryRun;
+    }
+  }
+
+  const accountEmailModeRaw =
+    typeof metadata.accountEmailMode === "string"
+      ? metadata.accountEmailMode.trim().toLowerCase()
+      : "";
+  if (accountEmailModeRaw.length === 0) {
+    missingFields.push("accountEmailMode");
+  } else if (accountEmailModeRaw !== "agentmail" && accountEmailModeRaw !== "existing") {
+    invalidFields.push("accountEmailMode");
+  }
+
+  if (missingFields.length > 0 || invalidFields.length > 0) {
+    return {
+      ok: false,
+      error: "invalid_api_key_purchase_metadata",
+      detail:
+        "api_key_purchase metadata invalid. Required: provider(string), accountEmailMode(agentmail|existing). Optional: targetProduct(string), dryRun(boolean).",
+      missingFields,
+      invalidFields,
+    };
+  }
+
+  return {
+    ok: true,
+    metadata: {
+      provider,
+      accountEmailMode: accountEmailModeRaw as "agentmail" | "existing",
+      ...(targetProduct !== undefined ? { targetProduct } : {}),
+      ...(dryRun !== undefined ? { dryRun } : {}),
+    },
+  };
+}
+
 function randomHex(bytes: number): string {
   const values = new Uint8Array(bytes);
   crypto.getRandomValues(values);
@@ -1024,6 +1189,7 @@ http.route({
       const provider = typeof payload.provider === "string" ? payload.provider : undefined;
       let metadataValue: unknown = payload.metadata;
       const isGiftcardPurchase = (intentType ?? "").trim().toLowerCase() === "giftcard_purchase";
+      const isApiKeyPurchase = (intentType ?? "").trim().toLowerCase() === "api_key_purchase";
       if (isGiftcardPurchase) {
         const metadataRecord =
           typeof metadataValue === "object" && metadataValue !== null && !Array.isArray(metadataValue)
@@ -1040,6 +1206,24 @@ http.route({
             };
           }
         }
+        const validation = validateGiftcardPurchaseMetadata(metadataValue);
+        if (!validation.ok) {
+          return json(400, validation);
+        }
+        metadataValue = validation.metadata;
+      }
+      if (isApiKeyPurchase) {
+        const validation = validateApiKeyPurchaseMetadata(metadataValue);
+        if (!validation.ok) {
+          return json(400, validation);
+        }
+        if (provider && provider.trim().toLowerCase() !== validation.metadata.provider.toLowerCase()) {
+          return json(400, {
+            error: "metadata_provider_mismatch",
+            detail: "metadata.provider must match top-level provider",
+          });
+        }
+        metadataValue = validation.metadata;
       }
       const metadataJson = metadataValue !== undefined ? JSON.stringify(metadataValue) : undefined;
       let offeringId: string | undefined;
@@ -1068,7 +1252,7 @@ http.route({
         offeringId = validation.offeringId;
       }
 
-      const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
+      const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter,elevenlabs").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
       if (provider && !allowedProviders.includes(provider.toLowerCase())) {
         return json(403, { error: "provider_not_allowed", provider, allowedProviders });
       }

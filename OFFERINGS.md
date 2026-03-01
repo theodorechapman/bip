@@ -42,7 +42,7 @@ this file defines the productized offerings exposed by bip to external agents.
 ### 2) api key purchase
 - offeringId: `apikey.provider.buy`
 - intentType: `api_key_purchase`
-- provider: `openrouter|...`
+- provider: `openrouter|elevenlabs|...`
 - rail: `auto`
 - riskClass: `high`
 - requiresHandoff: `often`

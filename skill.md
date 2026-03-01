@@ -24,6 +24,9 @@ bip handles the rest:
 - artifact return (codes/keys/receipts)
 - trace + ledger audit
 
+primary MVP path: `api_key_purchase`  
+secondary example: `giftcard_purchase`
+
 base url:
 
 ```bash
@@ -58,11 +61,11 @@ curl -s -X POST "$BASE/api/tools/offering_list" \
   -H "content-type: application/json" \
   -d '{}' | jq '.offerings'
 
-# 5) create policy-validated paid intent
+# 5) create policy-validated paid intent (primary MVP: api_key_purchase)
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto","metadata":{"cardRef":"card_ops_primary_xxxxxx"}}' \
+  -d '{"intentType":"api_key_purchase","provider":"elevenlabs","task":"create API key and return proof","budgetUsd":8,"rail":"auto","metadata":{"provider":"elevenlabs","accountEmailMode":"existing","targetProduct":"starter"}}' \
   | jq -r '.intentId')
 
 # 6) execute
@@ -115,7 +118,8 @@ curl -s -X POST "$BASE/api/tools/spend_summary" \
 - offering registry and policy caps enforced on `create_intent` for phase-1 offerings
 - idempotency required on execute
 - spend caps + rate limits should be enforced
-- giftcard intents can reference backend-only treasury card refs via `metadata.cardRef` (or `DEFAULT_TREASURY_CARD_REF`)
+- `api_key_purchase` metadata contract requires: `provider`, `accountEmailMode`; supports optional `targetProduct`, `dryRun`
+- giftcard intents remain supported as a secondary flow and can reference backend-only treasury card refs via `metadata.cardRef` (or `DEFAULT_TREASURY_CARD_REF`)
 - secrets return by reference (`secretRef`), not plaintext by default
 
 ---

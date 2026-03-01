@@ -484,10 +484,14 @@ function startMockProviders(): void {
         }
         found.statusChecks += 1;
         mockBrowserUseTasks.set(taskId, found);
+        const isApiKeyPurchaseTask = found.task.includes("[intent=api_key_purchase]");
+        const output = isApiKeyPurchaseTask
+          ? "API key created successfully. key=sk-live-test-key-1234567890 proof captured."
+          : "Gift card purchase completed successfully";
         return new Response(
           JSON.stringify({
             status: "finished",
-            output: "Gift card purchase completed successfully",
+            output,
             taskEcho: found.task,
           }),
           {
@@ -1003,6 +1007,12 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "giftcard_purchase",
         provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
       },
       { token: auth.accessToken },
     );
@@ -1017,6 +1027,12 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "giftcard_purchase",
         provider: "not-allowed-provider",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
       },
       { token: auth.accessToken },
     );
@@ -1031,11 +1047,155 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "api_key_purchase",
         provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
       },
       { token: auth.accessToken },
     );
     expect(overBudget.status).toBe(403);
     expect(overBudget.json.code).toBe("budget_cap_exceeded_per_intent");
+  });
+
+  test("accepts phase-1 api_key_purchase policy for elevenlabs", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          targetProduct: "starter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(200);
+    expect(typeof createIntent.json.intentId).toBe("string");
+  });
+
+  test("rejects api_key_purchase when required metadata is missing", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(400);
+    expect(createIntent.json.error).toBe("invalid_api_key_purchase_metadata");
+  });
+
+  test("execute api_key_purchase dryRun returns action_required plan", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          dryRun: true,
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(200);
+    const intentId = `${createIntent.json.intentId ?? ""}`;
+    const beforeTaskCount = mockBrowserUseTasks.size;
+    const execute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(execute.status).toBe(200);
+    expect(execute.json.status).toBe("action_required");
+    expect(typeof execute.json.reason).toBe("string");
+    expect(typeof execute.json.nextAction).toBe("string");
+    expect(Object.prototype.hasOwnProperty.call(execute.json, "handoffUrl")).toBe(true);
+    expect(mockBrowserUseTasks.size).toBe(beforeTaskCount);
+  });
+
+  test("api_key_purchase success/action_required responses include required contract fields", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const successIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          targetProduct: "starter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(successIntent.status).toBe(200);
+    const successIntentId = `${successIntent.json.intentId ?? ""}`;
+    const successExecute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId: successIntentId },
+      { token: auth.accessToken },
+    );
+    expect(successExecute.status).toBe(200);
+    expect(successExecute.json.status).toBe("ok");
+    expect(typeof successExecute.json.traceId).toBe("string");
+    expect(successExecute.json.provider).toBe("elevenlabs");
+    expect(typeof successExecute.json.proofRef).toBe("string");
+    const credential = successExecute.json.credential as Record<string, unknown>;
+    expect(typeof credential.secretRef).toBe("string");
+
+    const dryRunIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          dryRun: true,
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(dryRunIntent.status).toBe(200);
+    const dryRunIntentId = `${dryRunIntent.json.intentId ?? ""}`;
+    const dryRunExecute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId: dryRunIntentId },
+      { token: auth.accessToken },
+    );
+    expect(dryRunExecute.status).toBe(200);
+    expect(dryRunExecute.json.status).toBe("action_required");
+    expect(typeof dryRunExecute.json.reason).toBe("string");
+    expect(typeof dryRunExecute.json.nextAction).toBe("string");
+    expect(Object.prototype.hasOwnProperty.call(dryRunExecute.json, "handoffUrl")).toBe(true);
   });
 
   test("defaults giftcard metadata.cardRef and executes with treasury card artifact", async () => {
@@ -1073,6 +1233,12 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "giftcard_purchase",
         provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
       },
       { token: auth.accessToken },
     );
@@ -1304,6 +1470,12 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "giftcard_purchase",
         provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
       },
       { token: auth.accessToken },
     );
@@ -1317,6 +1489,10 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "api_key_purchase",
         provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
       },
       { token: auth.accessToken },
     );
@@ -1329,6 +1505,10 @@ describe("Auth + Tool API", () => {
         rail: "auto",
         intentType: "api_key_purchase",
         provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
       },
       { token: auth.accessToken },
     );
