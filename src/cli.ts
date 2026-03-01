@@ -491,10 +491,6 @@ program
     print(data, Boolean(globalOpts.json));
   });
 
-// Shopify autopilot commands
-import { registerShopifyCommands } from "../shopify/cli";
-registerShopifyCommands(program);
-
 program
   .command("wallet_register")
   .requiredOption("--chain <chain>", "Chain, e.g. solana")
@@ -579,6 +575,10 @@ program
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
   });
+
+// Shopify autopilot commands
+import { registerShopifyCommands } from "../shopify/cli";
+registerShopifyCommands(program);
 
 program.parseAsync().catch((error: unknown) => {
   const message = toErrorMessage(error);
