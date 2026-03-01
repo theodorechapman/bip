@@ -126,6 +126,58 @@ export const recordAuthAttempt = internalMutation({
   },
 });
 
+export const startLogin = internalMutation({
+  args: {
+    agentId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const agentId = normalizeSubject(args.agentId);
+    if (agentId.length < 3) {
+      throw new Error("Invalid X-Agent-Id header");
+    }
+
+    const now = Date.now();
+    let user = await ctx.db
+      .query("users")
+      .withIndex("by_agent_id", (q) => q.eq("agentId", agentId))
+      .unique();
+    if (user === null) {
+      const userId = await ctx.db.insert("users", {
+        agentId,
+        email: null,
+        createdAt: now,
+      });
+      const inserted = await ctx.db.get(userId);
+      if (inserted === null) {
+        throw new Error("Failed to create user");
+      }
+      user = inserted;
+    }
+
+    const accessToken = `at_${randomHex(32)}`;
+    const tokenHash = await sha256Hex(accessToken);
+    const accessExpiresAt = now + ACCESS_TTL_MS;
+
+    await ctx.db.insert("accessSessions", {
+      userId: user._id,
+      tokenHash,
+      expiresAt: accessExpiresAt,
+      revokedAt: null,
+      maxApiCalls: SESSION_API_CALL_LIMIT,
+      usedApiCalls: 0,
+      lastUsedAt: null,
+      createdAt: now,
+    });
+
+    return {
+      accessToken,
+      expiresAt: Math.floor(accessExpiresAt / 1000),
+      maxApiCalls: SESSION_API_CALL_LIMIT,
+      remainingApiCalls: SESSION_API_CALL_LIMIT,
+    };
+  },
+});
+
 export const consumeAccessTokenUse = internalMutation({
   args: {
     accessToken: v.string(),
@@ -193,160 +245,8 @@ export const consumeAccessTokenUse = internalMutation({
       userId: user._id,
       agentId: user.agentId,
       email: user.email,
-      phone: user.phone ?? null,
       maxApiCalls: accessSession.maxApiCalls,
       remainingApiCalls: accessSession.maxApiCalls - nextUsed,
-    };
-  },
-});
-
-const CHALLENGE_TTL_MS = 5 * 60 * 1000;
-
-export const createCaptchaChallenge = internalMutation({
-  args: {
-    agentId: v.string(),
-    inviteCode: v.string(),
-    ip: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const agentId = normalizeSubject(args.agentId);
-    if (agentId.length < 3) {
-      throw new Error("Invalid agentId");
-    }
-    const now = Date.now();
-    const challengeId = randomHex(20);
-    await ctx.db.insert("captchaChallenges", {
-      challengeId,
-      agentId,
-      inviteCode: args.inviteCode.trim(),
-      ip: normalizeIp(args.ip),
-      status: "pending",
-      loginResult: null,
-      expiresAt: now + CHALLENGE_TTL_MS,
-      createdAt: now,
-    });
-    return { challengeId };
-  },
-});
-
-export const completeCaptchaChallenge = internalMutation({
-  args: {
-    challengeId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const challenge = await ctx.db
-      .query("captchaChallenges")
-      .withIndex("by_challenge_id", (q) => q.eq("challengeId", args.challengeId))
-      .unique();
-    if (challenge === null) {
-      return { ok: false, reason: "not_found" };
-    }
-    if (challenge.status !== "pending") {
-      return { ok: false, reason: "already_completed" };
-    }
-    if (challenge.expiresAt < Date.now()) {
-      return { ok: false, reason: "expired" };
-    }
-
-    const agentId = challenge.agentId;
-    const now = Date.now();
-    let user = await ctx.db
-      .query("users")
-      .withIndex("by_agent_id", (q) => q.eq("agentId", agentId))
-      .unique();
-    if (user === null) {
-      const userId = await ctx.db.insert("users", {
-        agentId,
-        email: null,
-        createdAt: now,
-      });
-      const inserted = await ctx.db.get(userId);
-      if (inserted === null) {
-        throw new Error("Failed to create user");
-      }
-      user = inserted;
-    }
-
-    const accessToken = `at_${randomHex(32)}`;
-    const tokenHash = await sha256Hex(accessToken);
-    const accessExpiresAt = now + ACCESS_TTL_MS;
-
-    await ctx.db.insert("accessSessions", {
-      userId: user._id,
-      tokenHash,
-      expiresAt: accessExpiresAt,
-      revokedAt: null,
-      maxApiCalls: SESSION_API_CALL_LIMIT,
-      usedApiCalls: 0,
-      lastUsedAt: null,
-      createdAt: now,
-    });
-
-    const loginResult = {
-      accessToken,
-      expiresAt: Math.floor(accessExpiresAt / 1000),
-      maxApiCalls: SESSION_API_CALL_LIMIT,
-      remainingApiCalls: SESSION_API_CALL_LIMIT,
-    };
-
-    await ctx.db.patch(challenge._id, {
-      status: "completed",
-      loginResult: JSON.stringify(loginResult),
-    });
-
-    return { ok: true };
-  },
-});
-
-export const pollCaptchaChallenge = internalQuery({
-  args: {
-    challengeId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const challenge = await ctx.db
-      .query("captchaChallenges")
-      .withIndex("by_challenge_id", (q) => q.eq("challengeId", args.challengeId))
-      .unique();
-    if (challenge === null) {
-      return { status: "not_found" as const };
-    }
-    if (challenge.expiresAt < Date.now()) {
-      return { status: "expired" as const };
-    }
-    if (challenge.status === "completed" && challenge.loginResult !== null) {
-      return {
-        status: "completed" as const,
-        loginResult: JSON.parse(challenge.loginResult) as {
-          accessToken: string;
-          expiresAt: number;
-          maxApiCalls: number;
-          remainingApiCalls: number;
-        },
-      };
-    }
-    return { status: "pending" as const };
-  },
-});
-
-export const getChallengeForCallback = internalQuery({
-  args: {
-    challengeId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const challenge = await ctx.db
-      .query("captchaChallenges")
-      .withIndex("by_challenge_id", (q) => q.eq("challengeId", args.challengeId))
-      .unique();
-    if (challenge === null) {
-      return null;
-    }
-    return {
-      challengeId: challenge.challengeId,
-      agentId: challenge.agentId,
-      inviteCode: challenge.inviteCode,
-      ip: challenge.ip,
-      status: challenge.status,
-      expiresAt: challenge.expiresAt,
     };
   },
 });

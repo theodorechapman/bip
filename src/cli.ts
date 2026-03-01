@@ -45,10 +45,16 @@ type EncryptedEnvelope = {
   data: string;
 };
 
+type LoginResponse = {
+  accessToken: string;
+  expiresAt: number;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
 type UserRetrieveResponse = {
   id: string;
   email: string | null;
-  phone: string | null;
   agentId: string;
   maxApiCalls: number;
   remainingApiCalls: number;
@@ -71,24 +77,10 @@ type DeleteAgentmailResponse = {
   remainingApiCalls: number;
 };
 
-type RentPhoneResponse = {
-  numberId: string;
-  phoneNumber: string;
-  areaCode: string | null;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type ReleasePhoneResponse = {
-  ok: boolean;
-  numberId: string;
-  deletedLocalRecords: number;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
+type GenericOk = Record<string, unknown>;
 
 const CLI_VERSION = "0.1.0";
-const CONFIG_DIR = join(homedir(), ".config", "bip-cli");
+const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const CONSENT_FILE = join(CONFIG_DIR, "consent.json");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
@@ -99,6 +91,7 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_KEY_LEN = 32;
 const SCRYPT_MAX_MEM = 512 * 1024 * 1024;
+const HCAPTCHA_TEST_RESPONSE_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001";
 const INVITE_CODE_ENV_VAR = "BIP_INVITE_CODE";
 
 class ApiError extends Error {
@@ -183,7 +176,7 @@ function setConsent(consent: Consent): void {
 }
 
 function getEncryptionKey(): string {
-  const envKey = process.env.BIP_ENCRYPTION_KEY;
+  const envKey = process.env.MOONPAY_DEMO_ENCRYPTION_KEY;
   if (typeof envKey === "string" && envKey.length > 0) {
     return envKey;
   }
@@ -411,7 +404,12 @@ program
     "--invite-code <inviteCode>",
     `Invite code (or set ${INVITE_CODE_ENV_VAR})`,
   )
-  .action(async (args: { inviteCode?: string }) => {
+  .option(
+    "--captcha-token <captchaToken>",
+    "hCaptcha response token",
+    HCAPTCHA_TEST_RESPONSE_TOKEN,
+  )
+  .action(async (args: { inviteCode?: string; captchaToken: string }) => {
     requireConsent();
     const inviteCode =
       args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
@@ -421,65 +419,30 @@ program
       );
     }
     const baseUrl = getConfig().baseUrl;
-    const challenge = await postJson<{ challengeId: string; captchaUrl: string }>(
+    const result = await postJson<LoginResponse>(
       baseUrl,
-      "/auth/captcha-challenge",
-      { inviteCode },
+      "/auth/login",
+      {
+        captchaToken: args.captchaToken,
+        inviteCode,
+      },
       null,
     );
-    console.log("Open this URL to solve the captcha:");
-    console.log(challenge.captchaUrl);
-    try {
-      const { execSync } = await import("node:child_process");
-      const platform = process.platform;
-      if (platform === "darwin") {
-        execSync(`open "${challenge.captchaUrl}"`, { stdio: "ignore" });
-      } else if (platform === "linux") {
-        execSync(`xdg-open "${challenge.captchaUrl}" 2>/dev/null || true`, { stdio: "ignore" });
-      } else if (platform === "win32") {
-        execSync(`start "" "${challenge.captchaUrl}"`, { stdio: "ignore" });
-      }
-    } catch {
-      // browser open is best-effort
-    }
-    console.error("Waiting for captcha to be solved...");
-    const POLL_INTERVAL = 2000;
-    const POLL_TIMEOUT = 5 * 60 * 1000;
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < POLL_TIMEOUT) {
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-      const pollResult = await postJson<{
-        status: string;
-        accessToken?: string;
-        expiresAt?: number;
-        maxApiCalls?: number;
-        remainingApiCalls?: number;
-      }>(
-        baseUrl,
-        "/auth/captcha-poll",
-        { challengeId: challenge.challengeId },
-        null,
-      );
-      if (pollResult.status === "completed" && pollResult.accessToken !== undefined) {
-        saveCredentials({
-          accessToken: pollResult.accessToken,
-          expiresAt: (pollResult.expiresAt ?? 0) * 1000,
-          baseUrl,
-        });
-        const globalOpts = program.opts<{ json?: boolean }>();
-        print(
-          {
-            ok: true,
-            expiresAt: new Date((pollResult.expiresAt ?? 0) * 1000).toISOString(),
-            maxApiCalls: pollResult.maxApiCalls,
-            remainingApiCalls: pollResult.remainingApiCalls,
-          },
-          Boolean(globalOpts.json),
-        );
-        return;
-      }
-    }
-    throw new Error("Timed out waiting for captcha to be solved (5 minutes).");
+    saveCredentials({
+      accessToken: result.accessToken,
+      expiresAt: result.expiresAt * 1000,
+      baseUrl,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(
+      {
+        ok: true,
+        expiresAt: new Date(result.expiresAt * 1000).toISOString(),
+        maxApiCalls: result.maxApiCalls,
+        remainingApiCalls: result.remainingApiCalls,
+      },
+      Boolean(globalOpts.json),
+    );
   });
 
 program.command("logout").action(async () => {
@@ -529,83 +492,88 @@ program
   });
 
 program
-  .command("rent_phone")
-  .description("Rent a dedicated US phone number via JoltSMS")
-  .option("--area-code <areaCode>", "Preferred 3-digit US area code")
-  .action(async (args: { areaCode?: string }) => {
-    const data = await callProtectedTool<RentPhoneResponse>(
-      "/api/tools/rent_phone",
-      {
-        areaCode: args.areaCode,
-      },
-    );
+  .command("wallet_register")
+  .requiredOption("--chain <chain>", "Chain, e.g. solana")
+  .requiredOption("--address <address>", "Wallet address")
+  .option("--label <label>", "Optional label")
+  .action(async (args: { chain: string; address: string; label?: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/register_wallet", {
+      chain: args.chain,
+      address: args.address,
+      label: args.label,
+    });
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
   });
 
 program
-  .command("release_phone")
-  .description("Release (cancel) this agent's active phone number")
-  .requiredOption("--number-id <numberId>", "JoltSMS number ID to release")
-  .action(async (args: { numberId: string }) => {
-    const data = await callProtectedTool<ReleasePhoneResponse>(
-      "/api/tools/release_phone",
-      {
-        numberId: args.numberId,
-      },
-    );
+  .command("wallet_balance")
+  .option("--chain <chain>", "Chain, default solana", "solana")
+  .action(async (args: { chain: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/wallet_balance", {
+      chain: args.chain,
+    });
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
   });
 
-const provision = program.command("provision").description("Provision API keys from providers");
-
-provision
-  .command("openrouter")
-  .description("Sign up for OpenRouter and retrieve an API key")
-  .option("--env-file <path>", "Path to .env file to write key to", join(process.cwd(), ".env"))
-  .option("--no-save", "Don't save to .env file, just print the key")
-  .action(async (args: { envFile: string; save: boolean }) => {
-    const { getOpenRouterKey } = await import("./providers/openrouter");
-    const key = await getOpenRouterKey();
-    if (!key || !/^sk-or-[a-zA-Z0-9_-]+$/.test(key)) {
-      console.error("Failed to provision OpenRouter API key.");
-      process.exit(1);
-    }
-    console.log(`\nAPI Key: ${key}`);
-    if (args.save) {
-      const envVar = "OPENROUTER_API_KEY";
-      const envPath = args.envFile;
-      let content = "";
-      if (existsSync(envPath)) {
-        content = readFileSync(envPath, "utf-8");
-        const regex = new RegExp(`^${envVar}=.*$`, "m");
-        if (regex.test(content)) {
-          content = content.replace(regex, `${envVar}=${key}`);
-          console.log(`Updated ${envVar} in ${envPath}`);
-        } else {
-          content = content.trimEnd() + `\n${envVar}=${key}\n`;
-          console.log(`Appended ${envVar} to ${envPath}`);
-        }
-      } else {
-        content = `${envVar}=${key}\n`;
-        console.log(`Created ${envPath} with ${envVar}`);
-      }
-      writeFileSync(envPath, content, { encoding: "utf-8" });
-    }
+program
+  .command("intent_create")
+  .requiredOption("--task <task>", "Task description")
+  .option("--budget-usd <budgetUsd>", "Budget in USD", "5")
+  .option("--rail <rail>", "auto|x402|bitrefill|card", "auto")
+  .action(async (args: { task: string; budgetUsd: string; rail: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/create_intent", {
+      task: args.task,
+      budgetUsd: Number(args.budgetUsd),
+      rail: args.rail,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
   });
 
-provision
-  .command("demo-signup")
-  .description("Test full agent identity stack (email + phone) by signing up on a site")
-  .option("--url <url>", "Target signup URL", "https://github.com/signup")
-  .action(async (args: { url: string }) => {
-    const { demoSignup } = await import("./providers/demo-signup");
-    const result = await demoSignup(args.url);
-    if (!result) {
-      console.error("Signup failed.");
-      process.exit(1);
-    }
+program
+  .command("intent_approve")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/approve_intent", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("intent_execute")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/execute_intent", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("run_status")
+  .requiredOption("--run-id <runId>", "Run id")
+  .action(async (args: { runId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/run_status", {
+      runId: args.runId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("intent_status")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/intent_status", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
   });
 
 program.parseAsync().catch((error: unknown) => {
