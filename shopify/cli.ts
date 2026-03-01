@@ -103,4 +103,13 @@ export function registerShopifyCommands(parent: Command): void {
       console.log("[4/4] Starting fulfillment server...");
       await startWebhookServer(parseInt(args.port));
     });
+
+  shopify
+    .command("dashboard")
+    .description("Launch multi-agent dashboard with live browser views")
+    .option("--port <port>", "Dashboard port", "3456")
+    .action(async (args: { port: string }) => {
+      process.env.DASHBOARD_PORT = args.port;
+      await import("./dashboard/server");
+    });
 }
