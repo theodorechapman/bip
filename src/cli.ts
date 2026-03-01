@@ -77,6 +77,8 @@ type DeleteAgentmailResponse = {
   remainingApiCalls: number;
 };
 
+type GenericOk = Record<string, unknown>;
+
 const CLI_VERSION = "0.1.0";
 const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
@@ -485,6 +487,80 @@ program
         inboxId: args.inboxId,
       },
     );
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("wallet_register")
+  .requiredOption("--chain <chain>", "Chain, e.g. solana")
+  .requiredOption("--address <address>", "Wallet address")
+  .option("--label <label>", "Optional label")
+  .action(async (args: { chain: string; address: string; label?: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/register_wallet", {
+      chain: args.chain,
+      address: args.address,
+      label: args.label,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("wallet_balance")
+  .option("--chain <chain>", "Chain, default solana", "solana")
+  .action(async (args: { chain: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/wallet_balance", {
+      chain: args.chain,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("intent_create")
+  .requiredOption("--task <task>", "Task description")
+  .option("--budget-usd <budgetUsd>", "Budget in USD", "5")
+  .option("--rail <rail>", "auto|x402|bitrefill|card", "auto")
+  .action(async (args: { task: string; budgetUsd: string; rail: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/create_intent", {
+      task: args.task,
+      budgetUsd: Number(args.budgetUsd),
+      rail: args.rail,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("intent_approve")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/approve_intent", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("intent_execute")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/execute_intent", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("run_status")
+  .requiredOption("--run-id <runId>", "Run id")
+  .action(async (args: { runId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/run_status", {
+      runId: args.runId,
+    });
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
   });

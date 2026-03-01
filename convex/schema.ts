@@ -47,4 +47,50 @@ export default defineSchema({
     .index("by_user_id_and_created_at", ["userId", "createdAt"])
     .index("by_user_id_and_inbox_id", ["userId", "inboxId"])
     .index("by_user_id_and_requested_email", ["userId", "requestedEmail"]),
+
+  agentWallets: defineTable({
+    userId: v.id("users"),
+    chain: v.string(), // solana
+    address: v.string(),
+    label: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+  })
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_user_id_and_chain", ["userId", "chain"]),
+
+  paymentIntents: defineTable({
+    userId: v.id("users"),
+    intentId: v.string(),
+    task: v.string(),
+    budgetUsd: v.number(),
+    rail: v.string(), // auto|x402|bitrefill|card
+    status: v.string(), // drafted|needs_approval|approved|submitted|confirmed|failed
+    approvalRequired: v.boolean(),
+    approvedBy: v.union(v.string(), v.null()),
+    runId: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_intent_id", ["intentId"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
+  paymentEvents: defineTable({
+    intentId: v.string(),
+    eventType: v.string(),
+    payloadJson: v.string(),
+    createdAt: v.number(),
+  }).index("by_intent_id_and_created_at", ["intentId", "createdAt"]),
+
+  runs: defineTable({
+    runId: v.string(),
+    intentId: v.string(),
+    userId: v.id("users"),
+    status: v.string(), // queued|running|ok|failed
+    outputJson: v.union(v.string(), v.null()),
+    error: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_run_id", ["runId"])
+    .index("by_intent_id", ["intentId"]),
 });

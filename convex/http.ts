@@ -403,4 +403,141 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/tools/register_wallet",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "register_wallet");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { chain?: unknown; address?: unknown; label?: unknown };
+      if (typeof payload.chain !== "string" || typeof payload.address !== "string") {
+        return json(400, { error: "chain and address are required" });
+      }
+      const out = await ctx.runMutation(internal.payments.registerWallet, {
+        userId: auth.session.userId,
+        chain: payload.chain,
+        address: payload.address,
+        label: typeof payload.label === "string" ? payload.label : undefined,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/wallet_balance",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "wallet_balance");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { chain?: unknown };
+      const chain = typeof payload.chain === "string" ? payload.chain : "solana";
+      const wallet = await ctx.runQuery(internal.payments.getLatestWallet, {
+        userId: auth.session.userId,
+        chain,
+      });
+      return json(200, { chain, wallet });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/create_intent",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "create_intent");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { task?: unknown; budgetUsd?: unknown; rail?: unknown };
+      if (typeof payload.task !== "string") return json(400, { error: "task is required" });
+      const budgetUsd = typeof payload.budgetUsd === "number" ? payload.budgetUsd : 5;
+      const rail = typeof payload.rail === "string" ? payload.rail : "auto";
+      const out = await ctx.runMutation(internal.payments.createIntent, {
+        userId: auth.session.userId,
+        task: payload.task,
+        budgetUsd,
+        rail,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/approve_intent",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "approve_intent");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { intentId?: unknown };
+      if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
+      const out = await ctx.runMutation(internal.payments.approveIntent, {
+        intentId: payload.intentId,
+        approvedBy: auth.session.agentId,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/execute_intent",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "execute_intent");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { intentId?: unknown };
+      if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
+      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      if (intent === null || intent.userId !== auth.session.userId) {
+        return json(404, { error: "intent not found" });
+      }
+      const out = await ctx.runAction(internal.payments.executeIntent, {
+        intentId: payload.intentId,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/run_status",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "run_status");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { runId?: unknown };
+      if (typeof payload.runId !== "string") return json(400, { error: "runId is required" });
+      const run = await ctx.runQuery(internal.payments.getRun, { runId: payload.runId });
+      if (run === null || run.userId !== auth.session.userId) {
+        return json(404, { error: "run not found" });
+      }
+      return json(200, run);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
 export default http;
