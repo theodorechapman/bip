@@ -44,6 +44,7 @@ async function callBrowserUseTask(task: string): Promise<{
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
+      "X-Browser-Use-API-Key": apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ task }),
@@ -61,7 +62,10 @@ async function callBrowserUseTask(task: string): Promise<{
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const statusResp = await fetch(`${base}/api/v2/tasks/${taskId}/status`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "X-Browser-Use-API-Key": apiKey,
+      },
     });
     if (!statusResp.ok) {
       const err = await statusResp.text();
