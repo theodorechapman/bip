@@ -10,30 +10,31 @@ Install and operate the BIP CLI from an agent session.
 ## 1) Download And Install CLI
 
 ```bash
-curl -fsSL <convex-site-url>/cli/install.sh | sh
+curl -fsSL https://exciting-stingray-685.convex.site/cli/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Optional discovery endpoint:
 
 ```bash
-curl -fsSL <convex-site-url>/cli/manifest.json
+curl -fsSL https://exciting-stingray-685.convex.site/cli/manifest.json
 ```
 
 ## 2) Configure And Authenticate
 
-Run from repo root:
+Run after install:
 
 ```bash
-bip config:set-base-url --url <convex-site-url>
+bip config:set-base-url --url https://exciting-stingray-685.convex.site
 bip consent accept
-bip login --invite-code <invite-code> --captcha-token <captcha-token>
+bip login --invite-code <invite-code>
 ```
 
 Non-interactive auth:
 
 ```bash
 export BIP_INVITE_CODE="<invite-code>"
-bip login --captcha-token <captcha-token>
+bip login
 ```
 
 ## 3) Interface Contract
