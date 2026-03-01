@@ -280,6 +280,97 @@ function extractLikelyApiKey(output: unknown): string | null {
   return null;
 }
 
+type TreasuryCardSecret = {
+  label: string;
+  pan: string;
+  expMonth: string;
+  expYear: string;
+  cvv: string;
+  nameOnCard: string;
+  billingZip: string | null;
+  last4: string;
+  status: string;
+};
+
+type TreasuryCardResolved = TreasuryCardSecret & {
+  cardRef: string;
+};
+
+function parseTreasuryCardSecret(value: string): TreasuryCardSecret | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const card = parsed as Record<string, unknown>;
+  const pan = typeof card.pan === "string" ? card.pan.trim() : "";
+  const cvv = typeof card.cvv === "string" ? card.cvv.trim() : "";
+  const label = typeof card.label === "string" ? card.label.trim() : "";
+  const expMonth = typeof card.expMonth === "string" ? card.expMonth.trim() : "";
+  const expYear = typeof card.expYear === "string" ? card.expYear.trim() : "";
+  const nameOnCard =
+    typeof card.nameOnCard === "string" ? card.nameOnCard.trim() : "";
+  if (!pan || !cvv || !label || !expMonth || !expYear || !nameOnCard) return null;
+  const billingZip =
+    typeof card.billingZip === "string" && card.billingZip.trim().length > 0
+      ? card.billingZip.trim()
+      : null;
+  const last4 =
+    typeof card.last4 === "string" && card.last4.length === 4
+      ? card.last4
+      : pan.slice(-4);
+  const status =
+    typeof card.status === "string" && card.status.trim().length > 0
+      ? card.status.trim()
+      : "active";
+  return {
+    label,
+    pan,
+    expMonth,
+    expYear,
+    cvv,
+    nameOnCard,
+    billingZip,
+    last4,
+    status,
+  };
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function redactSensitiveValue(value: string, sensitiveTokens: Array<string>): string {
+  let out = value;
+  for (const token of sensitiveTokens) {
+    if (!token) continue;
+    out = out.replace(new RegExp(escapeRegExp(token), "g"), "[REDACTED]");
+  }
+  return out;
+}
+
+function redactSensitiveOutput(
+  value: unknown,
+  sensitiveTokens: Array<string>,
+): unknown {
+  if (typeof value === "string") {
+    return redactSensitiveValue(value, sensitiveTokens);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveOutput(item, sensitiveTokens));
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = redactSensitiveOutput(val, sensitiveTokens);
+    }
+    return out;
+  }
+  return value;
+}
+
 export const generateWallet = internalMutation({
   args: {
     userId: v.id("users"),
@@ -343,6 +434,80 @@ export const getLatestWallet = internalQuery({
       .order("desc")
       .take(1);
     return rows[0] ?? null;
+  },
+});
+
+export const listTreasuryCards = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("agentSecrets")
+      .withIndex("by_secret_type_and_created_at", (q) =>
+        q.eq("secretType", "treasury_card"),
+      )
+      .order("desc")
+      .collect();
+    return rows
+      .map((row) => {
+        const card = parseTreasuryCardSecret(row.secretValue);
+        if (card === null) return null;
+        return {
+          cardRef: row.secretRef,
+          label: card.label,
+          last4: card.last4,
+          exp: `${card.expMonth}/${card.expYear}`,
+          status: card.status,
+          createdAt: row.createdAt,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+  },
+});
+
+export const getTreasuryCardByRef = internalQuery({
+  args: {
+    cardRef: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("agentSecrets")
+      .withIndex("by_secret_ref", (q) => q.eq("secretRef", args.cardRef))
+      .unique();
+    if (row === null || row.secretType !== "treasury_card") return null;
+    const card = parseTreasuryCardSecret(row.secretValue);
+    if (card === null) return null;
+    return {
+      cardRef: row.secretRef,
+      ...card,
+    };
+  },
+});
+
+export const resolveUserIdOrAgentId = internalQuery({
+  args: {
+    userIdOrAgentId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const raw = args.userIdOrAgentId.trim();
+    if (raw.length === 0) return null;
+    const byAgent = await ctx.db
+      .query("users")
+      .withIndex("by_agent_id", (q) => q.eq("agentId", raw.toLowerCase()))
+      .unique();
+    if (byAgent !== null) {
+      return {
+        userId: byAgent._id,
+        agentId: byAgent.agentId,
+      };
+    }
+    const normalized = ctx.db.normalizeId("users", raw);
+    if (normalized === null) return null;
+    const byId = await ctx.db.get(normalized);
+    if (byId === null) return null;
+    return {
+      userId: byId._id,
+      agentId: byId.agentId,
+    };
   },
 });
 
@@ -920,10 +1085,39 @@ export const executeIntent = internalAction({
       startedAt: ts,
     });
 
+    let treasuryPaymentArtifact:
+      | {
+          paymentSource: "treasury_card_ref";
+          cardRef: string;
+        }
+      | null = null;
+    let treasuryCard: TreasuryCardResolved | null = null;
+    let sensitiveTokens: Array<string> = [];
+    let meta: any = null;
+    try {
+      meta = intent.metadataJson ? JSON.parse(intent.metadataJson) : null;
+    } catch {
+      meta = null;
+    }
+    if (intent.intentType === "giftcard_purchase") {
+      const cardRef =
+        typeof meta?.cardRef === "string" && meta.cardRef.trim().length > 0
+          ? meta.cardRef.trim()
+          : null;
+      if (cardRef !== null) {
+        treasuryCard = await ctx.runQuery(payments.getTreasuryCardByRef, { cardRef });
+        if (treasuryCard !== null) {
+          treasuryPaymentArtifact = {
+            paymentSource: "treasury_card_ref",
+            cardRef: treasuryCard.cardRef,
+          };
+          sensitiveTokens = [treasuryCard.pan, treasuryCard.cvv];
+        }
+      }
+    }
+
     // Real bitrefill adapter path (if selected)
     if (resolvedRail === "bitrefill") {
-      let meta: any = null;
-      try { meta = intent.metadataJson ? JSON.parse(intent.metadataJson) : null; } catch { meta = null; }
       const br = await callBitrefillPurchase({
         productId: meta?.productId,
         amount: typeof meta?.amount === "number" ? meta.amount : intent.budgetUsd,
@@ -990,19 +1184,44 @@ export const executeIntent = internalAction({
       return { runId, status: "ok", rail: "bitrefill", orderId: br.orderId ?? null, code: br.code ?? null, traceId };
     }
 
-    const buTask = `[rail=${resolvedRail}] ${intent.task}`;
+    const treasuryCardInstructions =
+      treasuryCard === null
+        ? ""
+        : `\nUse treasury payment instrument details for checkout:\nCard number: ${treasuryCard.pan}\nExpiry month: ${treasuryCard.expMonth}\nExpiry year: ${treasuryCard.expYear}\nCVV: ${treasuryCard.cvv}\nName on card: ${treasuryCard.nameOnCard}${
+            treasuryCard.billingZip !== null
+              ? `\nBilling ZIP: ${treasuryCard.billingZip}`
+              : ""
+          }`;
+    const buTask = `[rail=${resolvedRail}] ${intent.task}${
+      treasuryPaymentArtifact !== null
+        ? `\n[payment_source=${treasuryPaymentArtifact.paymentSource}] [card_ref=${treasuryPaymentArtifact.cardRef}]${treasuryCardInstructions}`
+        : ""
+    }`;
     const buResult = await callBrowserUseTask(buTask, args.apiKey);
     const doneTs = now();
 
     if (!buResult.ok) {
+      const sanitizedRaw =
+        buResult.raw === undefined
+          ? null
+          : redactSensitiveOutput(buResult.raw, sensitiveTokens);
+      const sanitizedError =
+        buResult.error === undefined || buResult.error === null
+          ? buResult.error
+          : `${redactSensitiveOutput(buResult.error, sensitiveTokens)}`;
       const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
       const isRecoverable = (intent.intentType === "account_bootstrap" || intent.intentType === "api_key_purchase") && (buResult.error ?? "").toLowerCase().includes("timeout");
       if (isRecoverable) {
         await ctx.runMutation(payments._updateRun, {
           runId,
           status: "action_required",
-          outputJson: JSON.stringify({ taskId: buResult.taskId ?? null, handoffUrl, raw: buResult.raw ?? null }),
-          error: buResult.error ?? "execution_timeout",
+          outputJson: JSON.stringify({
+            taskId: buResult.taskId ?? null,
+            handoffUrl,
+            raw: sanitizedRaw,
+            ...(treasuryPaymentArtifact ?? {}),
+          }),
+          error: sanitizedError ?? "execution_timeout",
           updatedAt: doneTs,
         });
         await ctx.runMutation(payments._setIntentStatus, {
@@ -1013,17 +1232,39 @@ export const executeIntent = internalAction({
         await ctx.runMutation(payments._recordEvent, {
           intentId: intent.intentId,
           eventType: "intent_action_required",
-          payloadJson: JSON.stringify({ runId, traceId, reason: buResult.error ?? "execution_timeout", taskId: buResult.taskId ?? null, handoffUrl }),
+          payloadJson: JSON.stringify({
+            runId,
+            traceId,
+            reason: sanitizedError ?? "execution_timeout",
+            taskId: buResult.taskId ?? null,
+            handoffUrl,
+          }),
           createdAt: doneTs,
         });
-        return { runId, status: "action_required", reason: buResult.error ?? "execution_timeout", taskId: buResult.taskId ?? null, traceId, handoffUrl };
+        return {
+          runId,
+          status: "action_required",
+          reason: sanitizedError ?? "execution_timeout",
+          taskId: buResult.taskId ?? null,
+          traceId,
+          handoffUrl,
+          ...(treasuryPaymentArtifact ?? {}),
+        };
       }
 
       await ctx.runMutation(payments._updateRun, {
         runId,
         status: "failed",
-        outputJson: buResult.raw ? JSON.stringify(buResult.raw) : null,
-        error: buResult.error ?? "execution_failed",
+        outputJson:
+          sanitizedRaw === null
+            ? (treasuryPaymentArtifact === null
+              ? null
+              : JSON.stringify({ ...treasuryPaymentArtifact }))
+            : JSON.stringify({
+                raw: sanitizedRaw,
+                ...(treasuryPaymentArtifact ?? {}),
+              }),
+        error: sanitizedError ?? "execution_failed",
         updatedAt: doneTs,
       });
 
@@ -1046,7 +1287,13 @@ export const executeIntent = internalAction({
       await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "intent_execution_failed",
-        payloadJson: JSON.stringify({ runId, traceId, error: buResult.error, taskId: buResult.taskId ?? null, handoffUrl }),
+        payloadJson: JSON.stringify({
+          runId,
+          traceId,
+          error: sanitizedError,
+          taskId: buResult.taskId ?? null,
+          handoffUrl,
+        }),
         createdAt: doneTs,
       });
 
@@ -1060,12 +1307,20 @@ export const executeIntent = internalAction({
         budgetUsd: intent.budgetUsd,
         task: intent.task,
         taskId: buResult.taskId ?? null,
-        error: buResult.error ?? null,
+        error: sanitizedError ?? null,
         startedAt: ts,
         endedAt: doneTs,
       });
 
-      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId, handoffUrl };
+      return {
+        runId,
+        status: "failed",
+        error: sanitizedError,
+        taskId: buResult.taskId ?? null,
+        traceId,
+        handoffUrl,
+        ...(treasuryPaymentArtifact ?? {}),
+      };
     }
 
     if (intent.intentType === "bitrefill_crypto_checkout") {
@@ -1139,15 +1394,18 @@ export const executeIntent = internalAction({
 
     const handoffNeeded = outputSuggestsManualIntervention(buResult.output);
     const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
+    const sanitizedOutput = redactSensitiveOutput(buResult.output, sensitiveTokens);
+    const sanitizedRaw = redactSensitiveOutput(buResult.raw, sensitiveTokens);
 
     await ctx.runMutation(payments._updateRun, {
       runId,
       status: handoffNeeded ? "action_required" : "ok",
       outputJson: JSON.stringify({
         taskId: buResult.taskId ?? null,
-        output: buResult.output ?? null,
-        raw: buResult.raw ?? null,
+        output: sanitizedOutput ?? null,
+        raw: sanitizedRaw ?? null,
         handoffUrl,
+        ...(treasuryPaymentArtifact ?? {}),
       }),
       error: null,
       updatedAt: doneTs,
@@ -1213,10 +1471,11 @@ export const executeIntent = internalAction({
         runId,
         status: handoffNeeded ? "action_required" : "ok",
         taskId: buResult.taskId ?? null,
-        output: buResult.output ?? null,
+        output: sanitizedOutput ?? null,
         traceId,
         handoffUrl,
         credential,
+        ...(treasuryPaymentArtifact ?? {}),
       };
     }
 
@@ -1224,9 +1483,10 @@ export const executeIntent = internalAction({
       runId,
       status: handoffNeeded ? "action_required" : "ok",
       taskId: buResult.taskId ?? null,
-      output: buResult.output ?? null,
+      output: sanitizedOutput ?? null,
       traceId,
       handoffUrl,
+      ...(treasuryPaymentArtifact ?? {}),
     };
   },
 });

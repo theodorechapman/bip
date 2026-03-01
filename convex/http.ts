@@ -79,6 +79,41 @@ function getBearerToken(req: Request): string | null {
   return token;
 }
 
+function getAdminToken(req: Request): string | null {
+  const token = req.headers.get("x-admin-token");
+  if (token === null) {
+    return null;
+  }
+  const trimmed = token.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isAdminTokenValid(req: Request): boolean {
+  const expected = (process.env.ADMIN_CARD_WRITE_TOKEN ?? "").trim();
+  if (expected.length === 0) {
+    return false;
+  }
+  const provided = getAdminToken(req);
+  return provided !== null && provided === expected;
+}
+
+function sanitizeLabel(label: string): string {
+  const normalized = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized : "card";
+}
+
+function randomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return Array.from(values)
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 type AuthedSession = {
   userId: Id<"users">;
   agentId: string;
@@ -426,6 +461,106 @@ http.route({
 });
 
 http.route({
+  path: "/api/tools/treasury_card_add",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "treasury_card_add");
+      if (!auth.ok) return auth.response;
+      if (!isAdminTokenValid(req)) {
+        return json(403, { error: "Invalid or missing x-admin-token" });
+      }
+      const body = await req.json();
+      const payload = body as {
+        label?: unknown;
+        pan?: unknown;
+        expMonth?: unknown;
+        expYear?: unknown;
+        cvv?: unknown;
+        nameOnCard?: unknown;
+        billingZip?: unknown;
+      };
+      if (
+        typeof payload.label !== "string" ||
+        typeof payload.pan !== "string" ||
+        typeof payload.expMonth !== "string" ||
+        typeof payload.expYear !== "string" ||
+        typeof payload.cvv !== "string" ||
+        typeof payload.nameOnCard !== "string"
+      ) {
+        return json(400, {
+          error:
+            "label, pan, expMonth, expYear, cvv, and nameOnCard are required strings",
+        });
+      }
+      const label = payload.label.trim();
+      const pan = payload.pan.replace(/\s+/g, "");
+      const expMonth = payload.expMonth.trim();
+      const expYear = payload.expYear.trim();
+      const cvv = payload.cvv.trim();
+      const nameOnCard = payload.nameOnCard.trim();
+      const billingZip =
+        typeof payload.billingZip === "string" && payload.billingZip.trim().length > 0
+          ? payload.billingZip.trim()
+          : null;
+      if (
+        label.length === 0 ||
+        pan.length < 12 ||
+        expMonth.length === 0 ||
+        expYear.length === 0 ||
+        cvv.length < 3 ||
+        nameOnCard.length === 0
+      ) {
+        return json(400, { error: "Invalid treasury card payload" });
+      }
+      const suffix = randomHex(6);
+      const cardRef = `card_${sanitizeLabel(label)}_${suffix}`;
+      const secretValue = JSON.stringify({
+        label,
+        pan,
+        expMonth,
+        expYear,
+        cvv,
+        nameOnCard,
+        billingZip,
+        last4: pan.slice(-4),
+        status: "active",
+      });
+      const payments: any = (internal as any).payments;
+      await ctx.runMutation(payments._putSecret, {
+        secretRef: cardRef,
+        userId: auth.session.userId,
+        provider: "treasury",
+        secretType: "treasury_card",
+        secretValue,
+      });
+      return json(200, { ok: true, cardRef, label });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/treasury_card_list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "treasury_card_list");
+      if (!auth.ok) return auth.response;
+      if (!isAdminTokenValid(req)) {
+        return json(403, { error: "Invalid or missing x-admin-token" });
+      }
+      const payments: any = (internal as any).payments;
+      const cards = await ctx.runQuery(payments.listTreasuryCards, {});
+      return json(200, { ok: true, cards });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/register_wallet",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
@@ -444,6 +579,47 @@ http.route({
         label: typeof payload.label === "string" ? payload.label : undefined,
       });
       return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/wallet_deposit_address",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "wallet_deposit_address");
+      if (!auth.ok) return auth.response;
+      const chain = "solana";
+      const payments: any = (internal as any).payments;
+      let wallet = await ctx.runQuery(payments.getLatestWallet, {
+        userId: auth.session.userId,
+        chain,
+      });
+      if (wallet === null) {
+        await ctx.runMutation(payments.generateWallet, {
+          userId: auth.session.userId,
+          chain,
+          label: "primary",
+        });
+        wallet = await ctx.runQuery(payments.getLatestWallet, {
+          userId: auth.session.userId,
+          chain,
+        });
+      }
+      if (wallet === null) {
+        return json(500, { error: "Failed to provision wallet" });
+      }
+      const reference = `fund_${auth.session.userId}_${Date.now()}`;
+      return json(200, {
+        ok: true,
+        chain,
+        address: wallet.address,
+        memo: reference,
+        reference,
+      });
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
@@ -689,6 +865,64 @@ http.route({
 });
 
 http.route({
+  path: "/api/tools/funding_mark_settled",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "funding_mark_settled");
+      if (!auth.ok) return auth.response;
+      if (!isAdminTokenValid(req)) {
+        return json(403, { error: "Invalid or missing x-admin-token" });
+      }
+      const body = await req.json();
+      const payload = body as {
+        userIdOrAgentId?: unknown;
+        amountCents?: unknown;
+        txSig?: unknown;
+        chain?: unknown;
+      };
+      if (
+        typeof payload.userIdOrAgentId !== "string" ||
+        typeof payload.amountCents !== "number" ||
+        typeof payload.txSig !== "string" ||
+        payload.chain !== "solana"
+      ) {
+        return json(400, {
+          error:
+            "userIdOrAgentId, amountCents, txSig, and chain='solana' are required",
+        });
+      }
+      if (payload.amountCents <= 0) {
+        return json(400, { error: "amountCents must be a positive number" });
+      }
+      const payments: any = (internal as any).payments;
+      const user = await ctx.runQuery(payments.resolveUserIdOrAgentId, {
+        userIdOrAgentId: payload.userIdOrAgentId,
+      });
+      if (user === null) {
+        return json(404, { error: "user not found" });
+      }
+      const out = await ctx.runMutation(payments._creditUserFunds, {
+        userId: user.userId,
+        amountCents: Math.round(payload.amountCents),
+        refType: "solana_settled",
+        refId: payload.txSig,
+      });
+      return json(200, {
+        ok: true,
+        userId: user.userId,
+        agentId: user.agentId,
+        chain: "solana",
+        txSig: payload.txSig,
+        ...out,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/create_intent",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
@@ -709,7 +943,26 @@ http.route({
       const rail = typeof payload.rail === "string" ? payload.rail : "auto";
       const intentType = typeof payload.intentType === "string" ? payload.intentType : undefined;
       const provider = typeof payload.provider === "string" ? payload.provider : undefined;
-      const metadataJson = payload.metadata !== undefined ? JSON.stringify(payload.metadata) : undefined;
+      let metadataValue: unknown = payload.metadata;
+      const isGiftcardPurchase = (intentType ?? "").trim().toLowerCase() === "giftcard_purchase";
+      if (isGiftcardPurchase) {
+        const metadataRecord =
+          typeof metadataValue === "object" && metadataValue !== null && !Array.isArray(metadataValue)
+            ? (metadataValue as Record<string, unknown>)
+            : null;
+        const existingCardRef =
+          typeof metadataRecord?.cardRef === "string" ? metadataRecord.cardRef.trim() : "";
+        if (existingCardRef.length === 0) {
+          const defaultCardRef = (process.env.DEFAULT_TREASURY_CARD_REF ?? "").trim();
+          if (defaultCardRef.length > 0) {
+            metadataValue = {
+              ...(metadataRecord ?? {}),
+              cardRef: defaultCardRef,
+            };
+          }
+        }
+      }
+      const metadataJson = metadataValue !== undefined ? JSON.stringify(metadataValue) : undefined;
       let offeringId: string | undefined;
 
       const payments: any = (internal as any).payments;

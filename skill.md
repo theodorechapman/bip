@@ -40,27 +40,33 @@ TOKEN=$(curl -s -X POST "$BASE/auth/login" \
   -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
   | jq -r '.accessToken')
 
-# 2) create paid intent
+# 2) get wallet funding address (auto-creates primary solana wallet if needed)
+curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{}' | jq '{address, memo, reference}'
+
+# 3) create paid intent
 curl -s -X POST "$BASE/api/tools/offering_list" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{}' | jq '.offerings'
 
-# 3) create policy-validated paid intent
+# 4) create policy-validated paid intent
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto"}' \
+  -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto","metadata":{"cardRef":"card_ops_primary_xxxxxx"}}' \
   | jq -r '.intentId')
 
-# 4) execute
+# 5) execute
 curl -s -X POST "$BASE/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "x-idempotency-key: exec-$INTENT-1" \
   -H "content-type: application/json" \
   -d "{\"intentId\":\"$INTENT\"}" | jq
 
-# 5) intent lifecycle + spend summary
+# 6) intent lifecycle + spend summary
 curl -s -X POST "$BASE/api/tools/intent_status" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
@@ -90,6 +96,10 @@ curl -s -X POST "$BASE/api/tools/spend_summary" \
 - `POST /api/tools/intent_status`
 - `POST /api/tools/run_status`
 - `POST /api/tools/spend_summary`
+- `POST /api/tools/treasury_card_add` (admin + bearer + `x-admin-token`)
+- `POST /api/tools/treasury_card_list` (masked metadata only)
+- `POST /api/tools/wallet_deposit_address` (returns primary solana funding target)
+- `POST /api/tools/funding_mark_settled` (admin-settles solana funding into ledger)
 
 ## policy/safety
 
@@ -97,6 +107,7 @@ curl -s -X POST "$BASE/api/tools/spend_summary" \
 - offering registry and policy caps enforced on `create_intent` for phase-1 offerings
 - idempotency required on execute
 - spend caps + rate limits should be enforced
+- giftcard intents can reference backend-only treasury card refs via `metadata.cardRef` (or `DEFAULT_TREASURY_CARD_REF`)
 - secrets return by reference (`secretRef`), not plaintext by default
 
 ---

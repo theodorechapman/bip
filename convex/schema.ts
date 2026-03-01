@@ -134,7 +134,8 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_secret_ref", ["secretRef"])
-    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_secret_type_and_created_at", ["secretType", "createdAt"]),
 
   runs: defineTable({
     runId: v.string(),
