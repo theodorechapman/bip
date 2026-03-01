@@ -1,13 +1,25 @@
-# MoonPay-Style Agent Auth Demo (TypeScript + Convex)
+# BIP — Browser Identity & Payments for Agents
 
-This repo contains a demo CLI application with a simplified MoonPay-style flow:
+BIP is identity, auth, and payments infrastructure for autonomous agents.
 
-1. `login` with `inviteCode + hCaptcha` (no email OTP)
-2. issue a 24-hour bearer session token
-3. enforce a per-session API call quota on protected endpoints
-4. enforce one active AgentMail inbox per authenticated agent
-5. store encrypted credentials locally
-6. call protected tool endpoints (including `create_agentmail`)
+**Pitch:**
+- Real email identity
+- Real auth + long-lived session continuity
+- Real web payments (x402 + checkout fill)
+- One runtime for intents (`intent_create -> intent_execute -> artifacts`)
+
+This repo includes the hosted API/runtime + CLI surfaces used in the Browser Use hackathon build.
+
+## What works right now
+
+1. Agent auth (`/auth/login`) with invite + hCaptcha controls
+2. Session issuance + quota enforcement
+3. Agent wallet provisioning + Solana deposit address
+4. Funding sync from inbound Solana txs (`funding_sync`)
+5. Intent lifecycle (`create`, `approve`, `execute`, `status`, `resume`)
+6. Payment rails abstraction (`x402` + browser checkout fill)
+7. Credential/artifact outputs by reference (`secretRef`, `proofRef`, `traceId`)
+8. Treasury card refs for backend checkout flows (no raw PAN/CVV in intent payloads)
 
 ## Stack
 
