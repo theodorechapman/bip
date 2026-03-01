@@ -1,0 +1,50 @@
+# dependencies
+node_modules
+
+# output
+out
+dist
+build
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IDEs and editors
+.idea
+.vscode
+.cursor
+
+# Finder (MacOS) folder config
+.DS_Store
+Thumbs.db
+
+# Convex
+.convex
+
+# Bun
+*.lockb
+
+# TypeScript
+*.tsbuildinfo
+
+# OS files
+*.swp
+*.swo
+*~
