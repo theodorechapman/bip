@@ -414,9 +414,9 @@ export function buildCliManifest(baseUrl: string): {
 export function renderSkillMarkdown(origin: string): string {
   return `---
 name: bip
-version: 1.0.0
-description: "Agent commerce runtime: authenticated intents, wallet/email bootstrap, browser+rail execution, and fulfillment artifacts (codes/keys/proofs)."
-tags: [agents, commerce, payments, gift-cards, api-keys, browser-use, crypto, x402]
+version: 1.1.0
+description: "Hosted agent commerce runtime: authenticated paid intents in, fulfillment artifacts out."
+tags: [agents, commerce, payments, x402, gift-cards, api-keys, automation]
 metadata:
   openclaw:
     emoji: "🧠"
@@ -425,89 +425,49 @@ metadata:
 
 # bip skill.md
 
-bip is a hosted runtime for autonomous agents to request paid actions (cards, credits, account setup), execute safely, and return verifiable outputs.
+bip is infrastructure for autonomous agents.
 
-**base url:** \`${origin}\`
+agents should only need to:
+1) authenticate
+2) pay/fund access (x402/wallet policy)
+3) request intents
 
-## core use cases
+bip handles the rest: execution orchestration, checkout/payment workflows, artifact return, tracing, and ledger audit.
 
-- buy gift cards (bitrefill flow)
-- acquire API access/credits (provider onboarding + key retrieval)
-- bootstrap an agent identity (wallet + inbox + auth)
-- run browser workflows with payment/checkout handoffs
-- return fulfillment artifacts (code/key refs, receipts, traces)
+base url: \`${origin}\`
 
-## auth model
-
-\`POST /auth/login\` requires \`X-Agent-Id\` and login payload.
-
-Example:
-\`\`\`bash
-BASE="${origin}"
-AGENT_ID="agent-$(date +%s)"
-
-TOKEN=$(curl -s -X POST "$BASE/auth/login" \
-  -H "content-type: application/json" \
-  -H "x-agent-id: $AGENT_ID" \
-  -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
-  | jq -r '.accessToken')
-\`\`\`
-
-## quickstart (bootstrap -> intent -> execute)
+## production flow
 
 \`\`\`bash
-# bootstrap identity
-curl -s -X POST "$BASE/api/tools/agent_bootstrap" \
+TOKEN=$(curl -s -X POST "${origin}/auth/login" \
+  -H "content-type: application/json" \
+  -H "x-agent-id: agent-$(date +%s)" \
+  -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' | jq -r '.accessToken')
+
+INTENT=$(curl -s -X POST "${origin}/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"chain":"solana","emailPrefix":"bip.agent"}' | jq
+  -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto"}' | jq -r '.intentId')
 
-# create intent
-INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
+curl -s -X POST "${origin}/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"intentType":"api_key_purchase","provider":"openrouter","task":"create account + buy credits + retrieve key","budgetUsd":8,"rail":"auto"}' \
-  | jq -r '.intentId')
-
-# execute (idempotency required)
-curl -s -X POST "$BASE/api/tools/execute_intent" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "x-idempotency-key: run-$INTENT-1" \
-  -H "x-browser-use-api-key: <BU_KEY>" \
+  -H "x-idempotency-key: exec-$INTENT-1" \
   -H "content-type: application/json" \
   -d "{\"intentId\":\"$INTENT\"}" | jq
 \`\`\`
 
-## key endpoints
+## core endpoints
+- POST /auth/login
+- POST /api/tools/create_intent
+- POST /api/tools/approve_intent
+- POST /api/tools/execute_intent
+- POST /api/tools/intent_resume
+- POST /api/tools/intent_status
+- POST /api/tools/run_status
 
-- \`POST /auth/login\`
-- \`POST /api/tools/agent_bootstrap\`
-- \`POST /api/tools/create_intent\`
-- \`POST /api/tools/approve_intent\`
-- \`POST /api/tools/execute_intent\`
-- \`POST /api/tools/intent_resume\`
-- \`POST /api/tools/intent_status\`
-- \`POST /api/tools/run_status\`
-- \`POST /api/tools/wallet_generate\`
-- \`POST /api/tools/wallet_balance\`
-- \`POST /api/tools/wallet_deposit\`
-- \`POST /api/tools/wallet_transfer\`
-- \`POST /api/tools/secrets_get\`
-
-## response statuses
-
-- \`ok\` → completed
-- \`action_required\` → human checkpoint needed (login/captcha/payment confirmation)
-- \`failed\` → execution failed (inspect error/events)
-
-Responses can include: \`traceId\`, \`runId\`, \`taskId\`, \`handoffUrl\`, and \`credential.secretRef\`.
-
-## safety expectations
-
-- provider allowlist enforced
-- idempotency required on execute
-- spend caps should be set per intent/day
-- secrets returned by reference (\`secretRef\`) and audited
-- keep a kill switch for paid execution
+## notes
+- provider allowlist + idempotency enforced
+- outputs include run/trace ids and fulfillment artifacts
+- secrets are returned by reference (secretRef)
 `;
 }
