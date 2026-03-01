@@ -1,5 +1,5 @@
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
 const DEFAULT_AGENTMAIL_BASE_URL = "https://api.agentmail.to";
@@ -95,13 +95,54 @@ export const recordInbox = internalMutation({
     clientId: v.union(v.string(), v.null()),
   },
   handler: async (ctx, args) => {
+    const normalizedInboxId = normalizeInboxIdentifier(args.inboxId);
     await ctx.db.insert("agentmailInboxes", {
       userId: args.userId,
       requestedEmail: normalizeRequestedEmail(args.requestedEmail),
-      inboxId: args.inboxId,
+      inboxId: normalizedInboxId,
       podId: args.podId,
       clientId: args.clientId,
       createdAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const getActiveInbox = internalQuery({
+  args: {
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const docs = await ctx.db
+      .query("agentmailInboxes")
+      .withIndex("by_user_id_and_created_at", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(1);
+    const latest = docs[0] ?? null;
+    if (latest === null) {
+      return null;
+    }
+    return {
+      inboxId: latest.inboxId,
+      requestedEmail: latest.requestedEmail,
+      podId: latest.podId,
+      clientId: latest.clientId,
+    };
+  },
+});
+
+export const setUserEmail = internalMutation({
+  args: {
+    userId: v.id("users"),
+    email: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (user === null) {
+      throw new Error("User not found");
+    }
+    await ctx.db.patch(args.userId, {
+      email: args.email === null ? null : normalizeRequestedEmail(args.email),
     });
     return null;
   },
@@ -150,6 +191,15 @@ export const createAgentmailInbox = internalAction({
     requestedEmail: v.string(),
   },
   handler: async (ctx, args) => {
+    const existingInbox = await ctx.runQuery(internal.agentmail.getActiveInbox, {
+      userId: args.userId,
+    });
+    if (existingInbox !== null) {
+      throw new Error(
+        `Agent already has an active inbox (${existingInbox.inboxId}). Delete it before creating another.`,
+      );
+    }
+
     const parsed = parseRequestedEmail(args.requestedEmail);
     const { baseUrl, apiKey } = getAgentmailConfig();
 
@@ -192,6 +242,10 @@ export const createAgentmailInbox = internalAction({
       podId: decoded.pod_id,
       clientId,
     });
+    await ctx.runMutation(internal.agentmail.setUserEmail, {
+      userId: args.userId,
+      email: resolvedEmail,
+    });
 
     return {
       inboxId: decoded.inbox_id,
@@ -211,10 +265,25 @@ export const deleteAgentmailInbox = internalAction({
     ctx,
     args,
   ): Promise<{ ok: true; inboxId: string; deletedLocalRecords: number }> => {
-    const inboxId = normalizeInboxIdentifier(args.inboxId);
+    const requestedInboxId = normalizeInboxIdentifier(args.inboxId);
+    const activeInbox = await ctx.runQuery(internal.agentmail.getActiveInbox, {
+      userId: args.userId,
+    });
+    if (activeInbox === null) {
+      throw new Error("No active inbox to delete for this agent");
+    }
+    const activeInboxId = normalizeInboxIdentifier(activeInbox.inboxId);
+    const activeRequestedEmail = normalizeRequestedEmail(activeInbox.requestedEmail);
+    if (
+      requestedInboxId !== activeInboxId &&
+      requestedInboxId !== activeRequestedEmail
+    ) {
+      throw new Error("inboxId does not match this agent's active inbox");
+    }
+
     const { baseUrl, apiKey } = getAgentmailConfig();
     const response = await fetch(
-      `${baseUrl}/v0/inboxes/${encodeURIComponent(inboxId)}`,
+      `${baseUrl}/v0/inboxes/${encodeURIComponent(activeInboxId)}`,
       {
         method: "DELETE",
         headers: {
@@ -242,13 +311,17 @@ export const deleteAgentmailInbox = internalAction({
       internal.agentmail.deleteInboxRecords,
       {
         userId: args.userId,
-        inboxId,
+        inboxId: activeInboxId,
       },
     );
+    await ctx.runMutation(internal.agentmail.setUserEmail, {
+      userId: args.userId,
+      email: null,
+    });
 
     return {
       ok: true,
-      inboxId,
+      inboxId: activeInboxId,
       deletedLocalRecords: cleanup.deletedLocalRecords,
     };
   },

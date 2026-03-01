@@ -564,11 +564,11 @@ describe("Auth + Tool API", () => {
     expect(overLimit.json.error).toBe("Session API call quota exceeded");
   });
 
-  test("create/delete agentmail respects free-tier cap of 3 active inboxes", async () => {
-    const auth = await login(`agent-${crypto.randomUUID()}`);
-    const createdInboxIds: Array<string> = [];
+  test("enforces one inbox per agent and still respects global free-tier cap of 3 active inboxes", async () => {
+    const createdByAgent: Array<{ auth: LoginSuccess; inboxId: string }> = [];
 
     for (let i = 0; i < AGENTMAIL_MAX_ACTIVE_INBOXES; i += 1) {
+      const auth = await login(`agent-${crypto.randomUUID()}`);
       const email = `quota-${Date.now()}-${i}@agentmail.to`;
       const createResponse = await postJson(
         "/api/tools/create_agentmail",
@@ -577,24 +577,40 @@ describe("Auth + Tool API", () => {
       );
       expect(createResponse.status).toBe(200);
       expect(createResponse.json.inboxId).toBe(email);
-      createdInboxIds.push(email);
+      createdByAgent.push({ auth, inboxId: email });
     }
 
+    const first = createdByAgent[0];
+    expect(first).toBeDefined();
+    if (first === undefined) {
+      throw new Error("Expected first agent to exist");
+    }
+    const secondInboxForSameAgent = await postJson(
+      "/api/tools/create_agentmail",
+      { email: `second-${Date.now()}@agentmail.to` },
+      { token: first.auth.accessToken },
+    );
+    expect(secondInboxForSameAgent.status).toBe(400);
+    expect(`${secondInboxForSameAgent.json.error ?? ""}`).toContain(
+      "Agent already has an active inbox",
+    );
+
+    const fourthAgent = await login(`agent-${crypto.randomUUID()}`);
     const overCap = await postJson(
       "/api/tools/create_agentmail",
       { email: `quota-over-${Date.now()}@agentmail.to` },
-      { token: auth.accessToken },
+      { token: fourthAgent.accessToken },
     );
     expect(overCap.status).toBe(400);
     expect(`${overCap.json.error ?? ""}`).toContain(
       "AgentMail create inbox failed (429)",
     );
 
-    const deletedInbox = createdInboxIds[0] ?? "";
+    const deletedInbox = first?.inboxId ?? "";
     const deleteResponse = await postJson(
       "/api/tools/delete_agentmail",
       { inboxId: deletedInbox },
-      { token: auth.accessToken },
+      { token: first.auth.accessToken },
     );
     expect(deleteResponse.status).toBe(200);
     expect(deleteResponse.json.ok).toBe(true);
@@ -604,19 +620,27 @@ describe("Auth + Tool API", () => {
     const createAfterDelete = await postJson(
       "/api/tools/create_agentmail",
       { email: replacementInboxId },
-      { token: auth.accessToken },
+      { token: fourthAgent.accessToken },
     );
     expect(createAfterDelete.status).toBe(200);
+    expect(createAfterDelete.json.inboxId).toBe(replacementInboxId);
 
-    for (const inboxId of [...createdInboxIds.slice(1), replacementInboxId]) {
+    for (const entry of createdByAgent.slice(1)) {
       const cleanupDelete = await postJson(
         "/api/tools/delete_agentmail",
-        { inboxId },
-        { token: auth.accessToken },
+        { inboxId: entry.inboxId },
+        { token: entry.auth.accessToken },
       );
       expect(cleanupDelete.status).toBe(200);
       expect(cleanupDelete.json.ok).toBe(true);
     }
+    const cleanupFourth = await postJson(
+      "/api/tools/delete_agentmail",
+      { inboxId: replacementInboxId },
+      { token: fourthAgent.accessToken },
+    );
+    expect(cleanupFourth.status).toBe(200);
+    expect(cleanupFourth.json.ok).toBe(true);
   });
 
   test("logout revokes access token", async () => {

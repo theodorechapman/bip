@@ -5,8 +5,9 @@ This repo contains a demo CLI application with a simplified MoonPay-style flow:
 1. `login` with `inviteCode + hCaptcha` (no email OTP)
 2. issue a 24-hour bearer session token
 3. enforce a per-session API call quota on protected endpoints
-4. store encrypted credentials locally
-5. call protected tool endpoints (including `create_agentmail`)
+4. enforce one active AgentMail inbox per authenticated agent
+5. store encrypted credentials locally
+6. call protected tool endpoints (including `create_agentmail`)
 
 ## Stack
 
@@ -144,6 +145,7 @@ What it covers:
 - 24-hour session issuance
 - per-session API quota enforcement (`100` calls)
 - `create_agentmail` and `delete_agentmail`
+- one-active-inbox-per-agent enforcement
 - CLI flow (`consent`, `login`, tool calls)
 
 The test harness uses local mock providers for hCaptcha and AgentMail.
