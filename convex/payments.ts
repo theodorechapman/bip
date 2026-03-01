@@ -227,8 +227,9 @@ export const getIntentEvents = internalQuery({
 
 export const executeIntent = internalAction({
   args: { intentId: v.string() },
-  handler: async (ctx, args) => {
-    const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: args.intentId });
+  handler: async (ctx, args): Promise<any> => {
+    const payments: any = (internal as any).payments;
+    const intent = await ctx.runQuery(payments.getIntent, { intentId: args.intentId });
     if (intent === null) throw new Error("Intent not found");
     if (intent.status !== "approved") throw new Error("Intent is not approved");
 
@@ -236,7 +237,7 @@ export const executeIntent = internalAction({
     const minBudget = getMinBudgetUsd();
     if (paymentsMode === "metered" && intent.budgetUsd < minBudget) {
       const blockedAt = now();
-      await ctx.runMutation(internal.payments._recordEvent, {
+      await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "payment_required",
         payloadJson: JSON.stringify({
@@ -247,7 +248,7 @@ export const executeIntent = internalAction({
         }),
         createdAt: blockedAt,
       });
-      await ctx.runMutation(internal.payments._setIntentStatus, {
+      await ctx.runMutation(payments._setIntentStatus, {
         intentId: intent.intentId,
         status: "failed",
         updatedAt: blockedAt,
@@ -264,7 +265,7 @@ export const executeIntent = internalAction({
     const runId = randomId("run");
     const ts = now();
 
-    await ctx.runMutation(internal.payments._insertRun, {
+    await ctx.runMutation(payments._insertRun, {
       runId,
       intentId: intent.intentId,
       userId: intent.userId,
@@ -275,7 +276,7 @@ export const executeIntent = internalAction({
       updatedAt: ts,
     });
 
-    await ctx.runMutation(internal.payments._setIntentSubmitted, {
+    await ctx.runMutation(payments._setIntentSubmitted, {
       intentId: intent.intentId,
       runId,
       updatedAt: ts,
@@ -283,7 +284,7 @@ export const executeIntent = internalAction({
 
     const resolvedRail = intent.rail === "auto" ? "x402" : intent.rail;
 
-    await ctx.runMutation(internal.payments._recordEvent, {
+    await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_started",
       payloadJson: JSON.stringify({ runId, rail: resolvedRail }),
@@ -291,19 +292,19 @@ export const executeIntent = internalAction({
     });
 
     if (["x402", "bitrefill", "card"].includes(resolvedRail) === false) {
-      await ctx.runMutation(internal.payments._updateRun, {
+      await ctx.runMutation(payments._updateRun, {
         runId,
         status: "failed",
         outputJson: null,
         error: `unsupported_rail:${resolvedRail}`,
         updatedAt: ts,
       });
-      await ctx.runMutation(internal.payments._setIntentStatus, {
+      await ctx.runMutation(payments._setIntentStatus, {
         intentId: intent.intentId,
         status: "failed",
         updatedAt: ts,
       });
-      await ctx.runMutation(internal.payments._recordEvent, {
+      await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "intent_execution_failed",
         payloadJson: JSON.stringify({ runId, error: `unsupported_rail:${resolvedRail}` }),
@@ -312,7 +313,7 @@ export const executeIntent = internalAction({
       return { runId, status: "failed", error: `unsupported_rail:${resolvedRail}` };
     }
 
-    await ctx.runMutation(internal.payments._recordEvent, {
+    await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "rail_selected",
       payloadJson: JSON.stringify({ runId, rail: resolvedRail, mode: paymentsMode }),
@@ -324,7 +325,7 @@ export const executeIntent = internalAction({
     const doneTs = now();
 
     if (!buResult.ok) {
-      await ctx.runMutation(internal.payments._updateRun, {
+      await ctx.runMutation(payments._updateRun, {
         runId,
         status: "failed",
         outputJson: buResult.raw ? JSON.stringify(buResult.raw) : null,
@@ -332,13 +333,13 @@ export const executeIntent = internalAction({
         updatedAt: doneTs,
       });
 
-      await ctx.runMutation(internal.payments._setIntentStatus, {
+      await ctx.runMutation(payments._setIntentStatus, {
         intentId: intent.intentId,
         status: "failed",
         updatedAt: doneTs,
       });
 
-      await ctx.runMutation(internal.payments._recordEvent, {
+      await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "intent_execution_failed",
         payloadJson: JSON.stringify({ runId, error: buResult.error, taskId: buResult.taskId ?? null }),
@@ -348,7 +349,7 @@ export const executeIntent = internalAction({
       return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null };
     }
 
-    await ctx.runMutation(internal.payments._updateRun, {
+    await ctx.runMutation(payments._updateRun, {
       runId,
       status: "ok",
       outputJson: JSON.stringify({ taskId: buResult.taskId ?? null, output: buResult.output ?? null, raw: buResult.raw ?? null }),
@@ -356,13 +357,13 @@ export const executeIntent = internalAction({
       updatedAt: doneTs,
     });
 
-    await ctx.runMutation(internal.payments._setIntentStatus, {
+    await ctx.runMutation(payments._setIntentStatus, {
       intentId: intent.intentId,
       status: "confirmed",
       updatedAt: doneTs,
     });
 
-    await ctx.runMutation(internal.payments._recordEvent, {
+    await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_confirmed",
       payloadJson: JSON.stringify({ runId, taskId: buResult.taskId ?? null }),
