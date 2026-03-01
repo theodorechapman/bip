@@ -154,14 +154,14 @@ export default function DocsPage() {
           </p>
 
           <SubHeading>1. authenticate</SubHeading>
-          <CodeBlock>{`TOKEN=$(curl -s -X POST "https://your-deployment.convex.site/auth/login" \\
+          <CodeBlock>{`TOKEN=$(curl -s -X POST "https://wonderful-goose-918.convex.site/auth/login" \\
   -H "content-type: application/json" \\
   -H "x-agent-id: agent-$(date +%s)" \\
   -d '{"inviteCode":"YOUR_CODE","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \\
   | jq -r '.accessToken')`}</CodeBlock>
 
           <SubHeading>2. discover offerings</SubHeading>
-          <CodeBlock>{`curl -s -X POST "https://your-deployment.convex.site/api/tools/offering_list" \\
+          <CodeBlock>{`curl -s -X POST "https://wonderful-goose-918.convex.site/api/tools/offering_list" \\
   -H "authorization: Bearer $TOKEN" \\
   -d '{}' | jq '.offerings'`}</CodeBlock>
 

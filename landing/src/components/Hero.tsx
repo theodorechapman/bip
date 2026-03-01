@@ -74,15 +74,15 @@ export default function Hero() {
         <div className="hero-line flex items-center gap-4">
           <a
             href="#waitlist"
-            className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#07080A] rounded-full font-sans font-bold text-sm tracking-wide"
+            className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#07080A] rounded-full font-sans font-light text-sm tracking-wide"
           >
             Start provisioning
           </a>
           <a
             href="#payments"
-            className="btn-magnetic px-7 py-3 border border-white/15 text-white/55 rounded-full font-sans font-medium text-sm hover:border-white/30 hover:text-white/75 transition-all duration-300"
+            className="btn-magnetic px-7 py-3 border border-white/15 text-white/55 rounded-full font-sans font-light text-sm hover:border-white/30 hover:text-white/75 transition-all duration-300"
           >
-            How it works →
+            How it works
           </a>
         </div>
 

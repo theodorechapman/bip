@@ -127,7 +127,7 @@ export default function Waitlist() {
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full px-6 py-3 rounded-full bg-white text-[#07080A] font-sans font-bold text-sm tracking-wide disabled:opacity-50 transition-opacity duration-200"
+                    className="w-full px-6 py-3 rounded-full bg-white text-[#07080A] font-sans font-light text-sm tracking-wide disabled:opacity-50 transition-opacity duration-200"
                   >
                     {loading ? 'Sending...' : 'Get access'}
                   </button>

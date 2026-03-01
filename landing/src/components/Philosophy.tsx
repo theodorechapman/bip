@@ -9,9 +9,6 @@ export default function Philosophy() {
   const sectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (prefersReducedMotion) return;
-
     const ctx = gsap.context(() => {
       gsap.from('.phil-q1', {
         y: 60,
@@ -107,7 +104,7 @@ export default function Philosophy() {
             </div>
 
             {/* Right — card swap */}
-            <div className="relative h-[420px] w-full lg:w-[520px] flex-shrink-0">
+            <div className="relative h-[420px] w-full lg:w-[520px] flex-shrink-0 lg:ml-auto">
               <CardSwap
                 width={500}
                 height={320}

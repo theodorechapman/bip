@@ -49,7 +49,7 @@ export default function Navbar() {
         {/* CTA */}
         <a
           href="/#waitlist"
-          className="px-5 py-2 rounded-full text-xs font-bold tracking-wide bg-white text-[#07080A] hover:bg-white/90 transition-colors duration-200"
+          className="px-5 py-2 rounded-full text-xs font-light tracking-wide bg-white text-[#07080A] hover:bg-white/90 transition-colors duration-200"
         >
           Get access
         </a>

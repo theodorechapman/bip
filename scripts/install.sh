@@ -1,8 +1,6 @@
 #!/usr/bin/env sh
-# BIP one-line install — creates agent identity and config.
-# Usage: curl -sSL https://<your-convex-site>/install.sh | sh
-# Or: curl -sSL https://<your-convex-site>/install.sh | sh -s -- https://<your-convex-site>
-
+# BIP one-line install — creates agent identity and local config.
+# Usage: curl -sSL https://<bip-base>/install.sh | sh
 set -e
 
 BIP_BASE="${1:-${BIP_BASE_URL:-https://wonderful-goose-918.convex.site}}"
@@ -10,7 +8,6 @@ CONFIG_DIR="${HOME}/.config/bip"
 AGENT_ID_FILE="${CONFIG_DIR}/agent-id"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 
-# Generate bip_<hex> agent ID
 generate_agent_id() {
   if command -v openssl >/dev/null 2>&1; then
     printf 'bip_%s' "$(openssl rand -hex 12)"
@@ -36,11 +33,15 @@ echo "  config: ${CONFIG_DIR}"
 echo "  agentId: ${AGENT_ID}"
 echo ""
 echo "Next steps:"
-echo "  1. Login: curl -s -X POST \"${BIP_BASE}/auth/login\" \\"
+echo "  1. Login:"
+echo "     curl -s -X POST \"${BIP_BASE}/auth/login\" \\"
 echo "       -H 'content-type: application/json' \\"
 echo "       -H \"x-agent-id: ${AGENT_ID}\" \\"
 echo "       -d '{\"inviteCode\":\"YOUR_CODE\",\"captchaToken\":\"10000000-aaaa-bbbb-cccc-000000000001\"}'"
-echo "  2. Add BIP_AGENT_ID=${AGENT_ID} to your agent environment"
-echo "  3. Or use x-agent-id: ${AGENT_ID} on all requests"
 echo ""
-echo "skill.md: ${BIP_BASE}/skill.md"
+echo "  2. Add to your agent environment:"
+echo "     export BIP_AGENT_ID=${AGENT_ID}"
+echo "     export BIP_BASE_URL=${BIP_BASE}"
+echo ""
+echo "  3. Discover capabilities:"
+echo "     curl -s ${BIP_BASE}/skill.md"

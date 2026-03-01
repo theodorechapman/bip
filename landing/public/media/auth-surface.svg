@@ -1,0 +1,27 @@
+<svg width="1200" height="675" viewBox="0 0 1200 675" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0c0e" />
+      <stop offset="100%" stop-color="#101217" />
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00d9aa" />
+      <stop offset="100%" stop-color="#05d96a" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" rx="30" fill="url(#bg)"/>
+  <rect x="60" y="60" width="1080" height="555" rx="22" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.16)" />
+  <text x="95" y="120" fill="white" opacity="0.65" font-family="Arial, sans-serif" font-size="38" font-weight="700">agent auth surface</text>
+  <text x="95" y="170" fill="rgba(255,255,255,0.45)" font-family="Arial, sans-serif" font-size="24">email + verification + session continuity</text>
+  <rect x="95" y="215" width="1010" height="90" rx="14" fill="#111318" stroke="rgba(255,255,255,0.12)" />
+  <text x="135" y="270" fill="#05d96a" font-family="Arial, sans-serif" font-size="32">agent@agentmail.io</text>
+  <rect x="95" y="335" width="460" height="140" rx="16" fill="#0f1318" stroke="url(#line)" />
+  <text x="130" y="390" fill="#9dffcc" font-family="Arial, sans-serif" font-size="30">inbox</text>
+  <text x="130" y="435" fill="white" opacity="0.6" font-family="Arial, sans-serif" font-size="22">verification link arrives</text>
+  <rect x="595" y="335" width="610" height="140" rx="16" fill="#0f1318" stroke="rgba(255,255,255,0.12)" />
+  <text x="635" y="390" fill="#9dffcc" font-family="Arial, sans-serif" font-size="30">session</text>
+  <text x="635" y="435" fill="white" opacity="0.6" font-family="Arial, sans-serif" font-size="22">token captured · reusable on demand</text>
+  <line x1="555" y1="405" x2="595" y2="405" stroke="rgba(255,255,255,0.45)" stroke-width="3"/>
+  <circle cx="555" cy="405" r="10" fill="#00d9aa"/>
+  <circle cx="595" cy="405" r="10" fill="#00d9aa" opacity="0.65"/>
+</svg>

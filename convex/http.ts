@@ -11,7 +11,12 @@ const DEFAULT_HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify";
 function json(status: number, payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Agent-Id, X-Idempotency-Key, X-Admin-Token, X-Browser-Use-Api-Key",
+    },
   });
 }
 
@@ -872,6 +877,44 @@ http.route({
 
 
 http.route({
+  path: "/api/tools/account_credit",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "account_credit");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { amountCents?: unknown; amountUsd?: unknown };
+      let cents: number;
+      if (typeof payload.amountCents === "number" && payload.amountCents > 0) {
+        cents = Math.round(payload.amountCents);
+      } else if (typeof payload.amountUsd === "number" && payload.amountUsd > 0) {
+        cents = Math.round(payload.amountUsd * 100);
+      } else {
+        return json(400, { error: "amountCents (int) or amountUsd (number) required, must be > 0" });
+      }
+      if (cents > 100_000) {
+        return json(400, { error: "max credit is $1000 per call" });
+      }
+      const result = await ctx.runMutation(internal.accounts._creditUserFunds, {
+        userId: auth.session.userId,
+        amountCents: cents,
+        refType: "manual_credit",
+        refId: `mc_${Date.now()}`,
+      });
+      return json(200, {
+        ok: result.ok,
+        creditedCents: cents,
+        availableCents: result.availableCents,
+        heldCents: result.heldCents,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/agent_bootstrap",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
@@ -1510,6 +1553,38 @@ http.route({
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
+  }),
+});
+
+// ── Global CORS preflight for auth routes ─────────────────────────
+
+http.route({
+  path: "/auth/login",
+  method: "OPTIONS",
+  handler: httpAction(async () => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Agent-Id",
+      },
+    });
+  }),
+});
+
+http.route({
+  path: "/auth/logout",
+  method: "OPTIONS",
+  handler: httpAction(async () => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
       },
     });
   }),

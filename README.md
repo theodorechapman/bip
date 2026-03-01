@@ -1,311 +1,197 @@
-# MoonPay-Style Agent Auth Demo (TypeScript + Convex)
+# bip
 
-This repo contains a demo CLI application with a simplified MoonPay-style flow:
+managed infrastructure that gives any agent economic capability.
 
-1. `login` with `inviteCode + hCaptcha` (no email OTP)
-2. issue a 24-hour bearer session token
-3. enforce a per-session API call quota on protected endpoints
-4. enforce one active AgentMail inbox per authenticated agent
-5. store encrypted credentials locally
-6. call protected tool endpoints (including `create_agentmail`)
+## one-line install
 
-## Stack
+```bash
+curl -sSL bip.dev/install.sh | sh
+```
 
-- Convex HTTP actions + Convex DB
-- TypeScript CLI (`commander`)
-- Local credential encryption (`aes-256-gcm` + `scrypt`)
+agent reads `skill.md` from bip to discover capabilities. no sdk. no docs scraping. one url.
 
-## Install
+## what bip is
+
+bip gives agents five core capabilities:
+
+1. **autonomous service provisioning** — agent signs up for services, verifies email, extracts API keys, stores credentials. no human involvement.
+2. **funded spending with guardrails** — Solana wallet per agent, real balance, full ledger, policy rails (per-intent budget caps, daily limits, provider allowlists).
+3. **autonomous email verification** — AgentMail gives agent a real inbox. bip polls it, clicks verification links, enters codes, continues flows automatically.
+4. **shopify dropshipping on autopilot** — sources from CJ Dropshipping, lists products with LLM-generated copy, fulfills orders. full API-driven pipeline.
+5. **x.com account creation and posting** — creates real X accounts with captcha solving, posts content autonomously.
+
+## how it works
+
+```
+install → discover → authenticate → create_intent → approve → execute → poll → consume
+```
+
+1. install: `curl -sSL bip.dev/install.sh | sh`
+2. discover: agent reads `$BASE/skill.md`
+3. authenticate: `POST /auth/login` with invite code
+4. intent lifecycle: `create_intent → approve_intent → execute_intent → intent_status`
+5. consume: credential refs, artifacts, traces, ledger records
+
+## the demo
+
+```
+"get me an OpenRouter API key with $20 of credits"
+→ agent spins up AgentMail inbox
+→ navigates to OpenRouter, signs up
+→ receives and clicks verification email autonomously
+→ funds wallet, pays for credits
+→ extracts sk-or-xxxx key
+→ returns key, immediately uses it to make an LLM call
+90 seconds. zero humans. real key. real money. real call.
+```
+
+## what bip hosts
+
+**identity layer:**
+- AgentMail inboxes managed per agent
+- Browser Use Cloud sessions with persistent profiles
+- encrypted credential storage (API keys, wallet keys, store configs)
+
+**compute layer:**
+- Browser Use execution with stealth, proxy routing, captcha handling
+- Arkose/FunCaptcha solving via 2Captcha for X.com signup
+- email verification loops (link clicking + code entry)
+- step-chained intent orchestration within Convex action timeouts
+
+**financial layer:**
+- Solana wallet generation and custody per agent
+- full ledger: deposits, holds, debits, settlements, releases
+- on-chain funding sync from Solana deposits
+- payment rail routing: x402, Bitrefill gift cards, treasury prepaid cards
+- per-intent hold/settle/release bookkeeping
+
+**policy layer:**
+- per-intent budget caps
+- daily spend limits per offering
+- provider allowlists
+- session-level API call quotas
+
+## what's built and working
+
+- **auth:** invite codes, hCaptcha verification, session tokens, rate limiting (per-subject + per-IP), quota enforcement
+- **wallet + ledger:** Solana wallet generation, SOL transfers, on-chain funding sync, hold/settle/release bookkeeping
+- **intent lifecycle:** create → approve → execute → status, with auto-approval below $10
+- **agentmail:** inbox creation, webhook processing, verification email polling, link + code extraction
+- **browser automation:** Browser Use Cloud task/skill execution, session management, proxy routing, profile persistence
+- **captcha solving:** Arkose/FunCaptcha via 2Captcha API with token injection
+- **bitrefill rail:** gift card purchase API
+- **openrouter key purchase:** end-to-end working — signup, verify, key extract, validation
+- **shopify module:** store creation (step-chained), CJ product sourcing, Shopify listing with LLM copy, order fulfillment
+- **x.com:** account bootstrap with captcha solving, email verification code entry, posting via browser automation
+- **treasury:** prepaid card pool management for legacy checkout flows
+- **observability:** trace event emission to Laminar/HUD via HTTP
+- **secrets:** encrypted credential storage with per-user isolation
+
+## api surface
+
+```
+POST /auth/login                        — authenticate
+POST /auth/logout                       — revoke session
+
+POST /api/tools/user_retrieve           — get agent identity
+POST /api/tools/agent_bootstrap         — provision inbox + wallet
+POST /api/tools/create_agentmail        — create email inbox
+POST /api/tools/delete_agentmail        — delete email inbox
+
+POST /api/tools/wallet_deposit_address  — get deposit address
+POST /api/tools/wallet_generate         — new wallet
+POST /api/tools/wallet_balance          — check balance
+POST /api/tools/wallet_transfer         — SOL transfer
+POST /api/tools/wallet_deposit          — credit account
+POST /api/tools/register_wallet         — register external wallet
+POST /api/tools/funding_sync            — sync on-chain deposits
+POST /api/tools/funding_status          — check funding status
+POST /api/tools/funding_mark_settled    — admin: manual credit
+
+POST /api/tools/offering_list           — list offerings + policies
+POST /api/tools/create_intent           — create intent
+POST /api/tools/approve_intent          — approve intent
+POST /api/tools/execute_intent          — execute intent
+POST /api/tools/intent_status           — get intent status + events
+POST /api/tools/intent_resume           — resume action_required intent
+POST /api/tools/run_status              — get run details
+POST /api/tools/spend_summary           — aggregate spend
+
+POST /api/tools/shopify_register        — register store creds
+POST /api/tools/secrets_get             — retrieve credential
+POST /api/tools/treasury_card_add       — add treasury card (admin)
+POST /api/tools/treasury_card_list      — list treasury cards (admin)
+
+POST /webhooks/agentmail                — webhook receiver
+POST /waitlist                          — waitlist signup
+
+GET  /skill.md                          — agent capability discovery
+GET  /install.sh                        — one-line install script
+```
+
+## quick api flow
+
+```bash
+BASE="https://wonderful-goose-918.convex.site"
+INVITE_CODE="opalbip2026"
+CAPTCHA_TOKEN="10000000-aaaa-bbbb-cccc-000000000001"
+
+RESP=$(curl -s -X POST "$BASE/auth/login" \
+  -H "content-type: application/json" \
+  -H "x-agent-id: bootstrap" \
+  -d "{\"inviteCode\":\"$INVITE_CODE\",\"captchaToken\":\"$CAPTCHA_TOKEN\"}")
+
+TOKEN=$(echo "$RESP" | jq -r '.accessToken')
+AGENT_ID=$(echo "$RESP" | jq -r '.agentId')
+
+INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "x-agent-id: $AGENT_ID" \
+  -H "content-type: application/json" \
+  -d '{"intentType":"api_key_purchase","provider":"openrouter","task":"create OpenRouter API key","budgetUsd":5,"rail":"auto","metadata":{"provider":"openrouter","accountEmailMode":"agentmail","targetProduct":"starter"}}' \
+  | jq -r '.intentId')
+
+curl -s -X POST "$BASE/api/tools/approve_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "x-agent-id: $AGENT_ID" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT\"}" > /dev/null
+
+curl -s -X POST "$BASE/api/tools/execute_intent" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "x-agent-id: $AGENT_ID" \
+  -H "x-idempotency-key: exec-$INTENT-1" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT\"}" | jq '{status, runId, traceId, output, artifact}'
+```
+
+## tech stack
+
+- **backend:** Convex (database + HTTP actions + scheduler)
+- **runtime:** Bun
+- **browser automation:** Browser Use Cloud (sessions, tasks, skills)
+- **email:** AgentMail (inboxes, webhooks)
+- **on-chain:** Solana (wallet gen, transfers, funding sync)
+- **payments:** x402, Bitrefill API, prepaid treasury cards
+- **captcha:** 2Captcha (Arkose/FunCaptcha solving)
+- **auth:** invite codes, hCaptcha, SHA-256 token hashing
+- **observability:** Laminar, HUD (trace events via HTTP)
+- **llm:** Anthropic Claude (Shopify product copy)
+
+## local dev
 
 ```bash
 bun install
-```
-
-## Start Convex local deployment
-
-```bash
 bun run convex:dev
-```
-
-This starts local Convex and writes `.env.local` including:
-
-- `CONVEX_URL`
-- `CONVEX_SITE_URL`
-
-## Agent onboarding
-
-Agents talk HTTP — no CLI install needed. Read the skill manifest to discover available intents:
-
-```bash
-curl -fsSL https://exciting-stingray-685.convex.site/skill.md
-```
-
-Authenticate and start making requests:
-
-```bash
-TOKEN=$(curl -s -X POST "https://exciting-stingray-685.convex.site/auth/login" \
-  -H "content-type: application/json" \
-  -H "x-agent-id: agent-$(date +%s)" \
-  -d '{"inviteCode":"<invite-code>","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
-  | jq -r '.accessToken')
-```
-
-Session tokens are valid for 24 hours.
-
-### Invite code setup
-
-Set an invite code gate on Convex:
-
-```bash
-bunx convex env set INVITE_CODES "<invite-code>"
-```
-
-For production:
-
-```bash
-bunx convex env set --prod INVITE_CODES "<invite-code>"
-```
-
-You can set multiple codes as a comma-separated list:
-
-```bash
-bunx convex env set --prod INVITE_CODES "code-a,code-b,code-c"
-```
-
-Optional local convenience for CLI:
-
-```bash
-export BIP_INVITE_CODE="<invite-code>"
-```
-
-### hCaptcha setup
-
-Set environment variables on Convex for your deployment:
-
-```bash
-bunx convex env set HCAPTCHA_SECRET_KEY "<your-hcaptcha-secret>"
-bunx convex env set HCAPTCHA_SITE_KEY "<your-hcaptcha-site-key>"
-```
-
-For production:
-
-```bash
-bunx convex env set --prod HCAPTCHA_SECRET_KEY "<your-hcaptcha-secret>"
-bunx convex env set --prod HCAPTCHA_SITE_KEY "<your-hcaptcha-site-key>"
-```
-
-For test/demo mode with hCaptcha test keys, use:
-
-- `HCAPTCHA_SITE_KEY=10000000-ffff-ffff-ffff-000000000001`
-- `HCAPTCHA_SECRET_KEY=0x0000000000000000000000000000000000000000`
-
-### AgentMail setup
-
-Set backend environment variables:
-
-```bash
-bunx convex env set AGENTMAIL_API_KEY "<your-agentmail-api-key>"
-```
-
-Optional (defaults to `https://api.agentmail.to`):
-
-```bash
-bunx convex env set AGENTMAIL_BASE_URL "https://api.agentmail.to"
-```
-
-For production:
-
-```bash
-bunx convex env set --prod AGENTMAIL_API_KEY "<your-agentmail-api-key>"
-bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
-```
-
-## Commands
-
-- `consent accept`
-- `consent check`
-- `config:set-base-url --url <url>`
-- `login --invite-code <code> [--captcha-token <token>]`
-- `user retrieve`
-- `create_agentmail --email <email>`
-- `delete_agentmail --inbox-id <inboxId>`
-- `wallet_register --chain <chain> --address <address> [--label <label>]`
-- `wallet_balance [--chain <chain>]`
-- `intent_create --task <task> [--budget-usd <usd>] [--rail <rail>]`
-- `intent_approve --intent-id <intentId>`
-- `intent_execute --intent-id <intentId>`
-- `intent_status --intent-id <intentId>`
-- `run_status --run-id <runId>`
-- `logout`
-
-## Tool API endpoints
-
-- `POST /api/tools/offering_list` (phase-1 static offerings + effective policy)
-- `POST /api/tools/create_intent` (policy-validated for phase-1 when `intentType` + `provider` are set)
-- `POST /api/tools/approve_intent`
-- `POST /api/tools/execute_intent`
-- `POST /api/tools/intent_resume`
-- `POST /api/tools/intent_status` (now includes `holdAmountCents`, `settledAmountCents`, `releasedAmountCents`, `fundingStatus`)
-- `POST /api/tools/run_status`
-- `POST /api/tools/spend_summary` (per-agent funded/held/settled + totals by provider and intent type)
-- `POST /api/tools/treasury_card_add` (admin-gated; stores backend card by `cardRef`)
-- `POST /api/tools/treasury_card_list` (admin-gated; masked metadata only)
-- `POST /api/tools/wallet_deposit_address` (returns/auto-provisions primary Solana funding address)
-- `POST /api/tools/funding_sync` (operator trigger; scans inbound Solana txs and auto-credits unprocessed deposits)
-- `POST /api/tools/funding_status` (shows detected inbound Solana txs and credited/uncredited state for current user)
-- `POST /api/tools/funding_mark_settled` (admin-gated; credits ledger from settled Solana transfer)
-
-### Payments execution env
-
-For live Browser Use-backed intent execution:
-
-```bash
-export BROWSER_USE_API_KEY="<your-bu-api-key>"
-# optional
-export BROWSER_USE_API_BASE="https://api.browser-use.com"
-export ADMIN_CARD_WRITE_TOKEN="<internal-admin-token>"
-export DEFAULT_TREASURY_CARD_REF="card_ops_primary_xxxxxx"
-
-# free | metered
-export PAYMENTS_MODE="free"
-# minimum budget gate in metered mode
-export MIN_INTENT_BUDGET_USD="1"
-```
-
-## Primary MVP flow: api_key_purchase
-
-```bash
-# 1) login
-TOKEN=$(curl -s -X POST "$BASE/auth/login" \
-  -H "content-type: application/json" \
-  -H "x-agent-id: agent-$(date +%s)" \
-  -d '{"inviteCode":"opalbip2026","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
-  | jq -r '.accessToken')
-
-# 2) fund account
-curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{}' | jq '{address, memo, reference}'
-
-curl -s -X POST "$BASE/api/tools/funding_sync" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
-
-# 3) create deterministic api_key_purchase intent
-INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"intentType":"api_key_purchase","provider":"elevenlabs","task":"create API key and return proof","budgetUsd":8,"rail":"auto","metadata":{"provider":"elevenlabs","accountEmailMode":"existing","targetProduct":"starter"}}' \
-  | jq -r '.intentId')
-
-# 4) execute
-curl -s -X POST "$BASE/api/tools/execute_intent" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d "{\"intentId\":\"$INTENT\"}" | jq '{status, provider, traceId, proofRef, credential, artifact, handoffUrl}'
-```
-
-## Secondary flow: Treasury card ref + giftcard_purchase
-
-```bash
-# 0) admin adds treasury card once (never send PAN/CVV in intent payloads)
-CARD_REF=$(curl -s -X POST "$BASE/api/tools/treasury_card_add" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "x-admin-token: $ADMIN_CARD_WRITE_TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"label":"ops-primary","pan":"4111111111111111","expMonth":"12","expYear":"2030","cvv":"123","nameOnCard":"Ops Treasury"}' \
-  | jq -r '.cardRef')
-
-# 1) agent gets deposit address (wallet auto-generated if missing)
-curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{}' | jq '{address, memo, reference}'
-
-# 2) send SOL on-chain to that address, then trigger auto funding sync
-curl -s -X POST "$BASE/api/tools/funding_sync" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
-
-# 3) optional: inspect which txs are credited vs pending
-curl -s -X POST "$BASE/api/tools/funding_status" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"maxTx":20}' | jq '{detectedCount, txs}'
-
-# 4) admin override remains available for manual settlement edits
-curl -s -X POST "$BASE/api/tools/funding_mark_settled" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "x-admin-token: $ADMIN_CARD_WRITE_TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"userIdOrAgentId":"agent-123","amountCents":1000,"txSig":"5f...","chain":"solana"}' | jq
-
-# 5) agent creates giftcard intent (metadata.cardRef optional if DEFAULT_TREASURY_CARD_REF is set)
-INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d "{\"intentType\":\"giftcard_purchase\",\"provider\":\"bitrefill\",\"task\":\"buy $10 card and return fulfillment\",\"budgetUsd\":10,\"rail\":\"auto\",\"metadata\":{\"cardRef\":\"$CARD_REF\"}}" \
-  | jq -r '.intentId')
-
-# 6) execute; artifacts include payment source marker only (no PAN/CVV)
-curl -s -X POST "$BASE/api/tools/execute_intent" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d "{\"intentId\":\"$INTENT\"}" | jq '{status, runId, paymentSource, cardRef}'
-```
-
-## Typecheck
-
-```bash
 bun run typecheck
 ```
 
-## Testing
+## the thesis
 
-Run the Bun E2E suite:
+the entire web was built to keep bots out — CAPTCHAs, email verification, payment friction, bot detection. that assumption is now wrong. agents are the future users of the internet.
 
-```bash
-bun run test:e2e
-```
+bip bridges two eras:
+- **today:** agents navigate the legacy human web via browser automation
+- **tomorrow:** agents transact natively via x402 (HTTP 402, machine-to-machine, no forms)
 
-What it covers:
-
-- invite-code + hCaptcha login gating
-- 24-hour session issuance
-- per-session API quota enforcement (`100` calls)
-- `create_agentmail` and `delete_agentmail`
-- one-active-inbox-per-agent enforcement
-- CLI flow (`consent`, `login`, tool calls)
-- phase-1 offering registry endpoint
-- create-intent policy enforcement (allowlist + caps), including `api_key_purchase` metadata contract
-- per-agent spend summary totals
-
-The test harness uses local mock providers for hCaptcha and AgentMail.
-It simulates AgentMail free-tier behavior with a cap of `3` active inboxes and validates that deleting an inbox frees a slot.
-
-
-## tracing sinks (optional)
-
-set either/both to mirror run lifecycle events externally:
-
-- `LAMINAR_INGEST_URL` (+ optional `LAMINAR_API_KEY`)
-- `HUD_TRACE_URL` (+ optional `HUD_API_KEY`)
-
-payload includes `traceId`, `runId`, `intentId`, phase (`started|rail_selected|failed|confirmed`), status, rail, task metadata, and timing fields.
-
-## Phase-1 offering policy
-
-- Offering policies are persisted in `offeringPolicies` and auto-seeded from `OFFERINGS.md` phase-1 defaults on first use.
-- `create_intent` enforces:
-  - offering registry match on (`intentType`, `provider`)
-  - provider allowlist per offering policy
-  - per-intent budget cap and per-day budget cap
-  - `api_key_purchase` metadata contract:
-    - `provider` (string, required)
-    - `accountEmailMode` (`agentmail|existing`, required)
-    - `targetProduct` (string, optional)
-    - `dryRun` (boolean, optional)
-- Legacy mode is preserved when both `intentType` and `provider` are omitted.
+bip works in both worlds. the intent abstraction (`create → approve → execute`) is the connective tissue.

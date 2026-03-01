@@ -73,13 +73,13 @@ export default function Footer() {
           <div className="flex flex-col gap-3">
             <a
               href="/#waitlist"
-              className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#040506] rounded-full font-bold text-sm whitespace-nowrap inline-block"
+              className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#040506] rounded-full font-light text-sm whitespace-nowrap inline-block"
             >
-              Start provisioning →
+              Start provisioning
             </a>
             <Link
               to="/docs"
-              className="btn-magnetic px-7 py-3 border border-white/8 text-white/30 rounded-full font-medium text-sm hover:border-white/15 hover:text-white/50 transition-all duration-300 inline-block"
+              className="btn-magnetic px-7 py-3 border border-white/8 text-white/30 rounded-full font-light text-sm hover:border-white/15 hover:text-white/50 transition-all duration-300 inline-block"
             >
               Read the docs
             </Link>

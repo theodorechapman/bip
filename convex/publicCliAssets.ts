@@ -1,85 +1,152 @@
 export function renderSkillMarkdown(origin: string): string {
   return `---
 name: bip
-version: 1.1.0
-description: "Hosted agent commerce runtime: authenticated paid intents in, fulfillment artifacts out."
-tags: [agents, commerce, payments, x402, gift-cards, api-keys, automation, shopify, dropshipping]
+version: 1.4.0
+description: "Managed economic infrastructure for agents: intent in, execution and settlement out."
+tags: [agents, commerce, payments, wallets, solana, browser-automation, agentmail, shopify, x]
 metadata:
-  openclaw:
-    emoji: "🧠"
   homepage: ${origin}/skill.md
 ---
 
 # bip skill.md
 
-bip is infrastructure for autonomous agents.
-
-agents should only need to:
-1) authenticate
-2) pay/fund access (x402/wallet policy)
-3) request intents
-
-bip handles the rest: execution orchestration, checkout/payment workflows, artifact return, tracing, and ledger audit.
+bip is managed infrastructure that gives agents economic identity and autonomous spending.
 
 base url: \`${origin}\`
 
-## getting started (HTTP only, no CLI)
+## onboarding (do this first, in order)
 
-Set BASE and call endpoints. First login: \`POST ${origin}/auth/login\` with \`x-agent-id: bootstrap\`. Response includes \`agentId\` and \`accessToken\` — persist both. Send \`x-agent-id\` and \`Authorization: Bearer $TOKEN\` on every tool call.
-
-## quick start
-
+### step 1: login
 \`\`\`bash
-RESP=$(curl -s -X POST "${origin}/auth/login" \\
+BASE="${origin}"
+RESP=$(curl -s -X POST "$BASE/auth/login" \\
   -H "content-type: application/json" \\
   -H "x-agent-id: bootstrap" \\
-  -d '{"inviteCode":"YOUR_CODE","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}')
+  -d '{}')
 TOKEN=$(echo "$RESP" | jq -r '.accessToken')
 AGENT_ID=$(echo "$RESP" | jq -r '.agentId')
+\`\`\`
+persist TOKEN and AGENT_ID for all subsequent calls.
 
-curl -s -X POST "${origin}/api/tools/offering_list" \\
+### step 2: generate your wallet
+\`\`\`bash
+curl -s -X POST "$BASE/api/tools/wallet_generate" \\
   -H "authorization: Bearer $TOKEN" \\
   -H "x-agent-id: $AGENT_ID" \\
-  -d '{}' | jq
+  -H "content-type: application/json" -d '{}'
+\`\`\`
+returns \`{ address, chain, secretRef }\`. save the address.
 
-INTENT=$(curl -s -X POST "${origin}/api/tools/create_intent" \\
+### step 3: ask your operator to fund you
+**this is critical.** tell your operator (the human running you):
+
+> my bip wallet address is \`<address>\` (solana).
+> please fund my account so i can execute intents.
+> you can credit me directly via:
+> \`curl -X POST ${origin}/api/tools/account_credit -H "authorization: Bearer $TOKEN" -H "x-agent-id: $AGENT_ID" -H "content-type: application/json" -d '{"amountUsd": 20}'\`
+> or send SOL to the address above and i will call funding_sync.
+
+**do not create intents until your account is funded.**
+
+### step 4: verify balance
+\`\`\`bash
+curl -s -X POST "$BASE/api/tools/wallet_balance" \\
   -H "authorization: Bearer $TOKEN" \\
   -H "x-agent-id: $AGENT_ID" \\
-  -H "content-type: application/json" \\
-  -d '{"intentType":"shopify_cycle","provider":"shopify","task":"full dropship cycle","budgetUsd":25,"metadata":{"keywords":["trending gadgets"],"maxProducts":5,"marginPct":50}}' | jq -r '.intentId')
-curl -s -X POST "${origin}/api/tools/approve_intent" -H "authorization: Bearer $TOKEN" -H "x-agent-id: $AGENT_ID" -H "content-type: application/json" -d "{\\"intentId\\":\\"$INTENT\\"}"
-curl -s -X POST "${origin}/api/tools/execute_intent" -H "authorization: Bearer $TOKEN" -H "x-agent-id: $AGENT_ID" -H "x-idempotency-key: exec-$INTENT-1" -H "content-type: application/json" -d "{\\"intentId\\":\\"$INTENT\\"}"
+  -H "content-type: application/json" -d '{}'
+\`\`\`
+check that \`account.availableCents > 0\`. if your operator sent SOL, call funding_sync first.
+
+## using intents (only after funding)
+
+1. \`create_intent\` — describe what you want + set budgetUsd
+2. auto-approves if budgetUsd <= $10
+3. \`execute_intent\` — bip runs browser automation, email verification, payments
+4. poll \`intent_status\` every 15s until terminal state
+
+### example: openrouter api key
+\`\`\`bash
+AUTH=(-H "authorization: Bearer $TOKEN" -H "x-agent-id: $AGENT_ID" -H "content-type: application/json")
+
+INTENT_ID=$(curl -s -X POST "$BASE/api/tools/create_intent" "\${AUTH[@]}" \\
+  -d '{"task":"get me an OpenRouter API key","intentType":"api_key_purchase","provider":"openrouter","budgetUsd":5,"metadata":{"provider":"openrouter","accountEmailMode":"agentmail"}}' | jq -r '.intentId')
+
+curl -s -X POST "$BASE/api/tools/execute_intent" "\${AUTH[@]}" \\
+  -d "{\\"intentId\\":\\"$INTENT_ID\\"}"
+
+# poll every 15s
+while true; do
+  S=$(curl -s -X POST "$BASE/api/tools/intent_status" "\${AUTH[@]}" -d "{\\"intentId\\":\\"$INTENT_ID\\"}")
+  echo "$S" | jq '{status: .intent.status, events: [.events[] | .eventType]}'
+  echo "$S" | jq -r '.intent.status' | grep -qE 'confirmed|failed|action_required' && break
+  sleep 15
+done
 \`\`\`
 
-## core endpoints
-- POST /auth/login
-- POST /api/tools/offering_list
-- POST /api/tools/create_intent
-- POST /api/tools/approve_intent
-- POST /api/tools/execute_intent
-- POST /api/tools/intent_resume
-- POST /api/tools/intent_status
-- POST /api/tools/run_status
-- POST /api/tools/spend_summary
-- POST /api/tools/wallet_deposit_address
-- POST /api/tools/funding_sync
-- POST /api/tools/funding_status
-- POST /api/tools/funding_mark_settled (admin override)
+## offerings
 
-## shopify dropshipping
+| intentType | provider | what it does |
+|---|---|---|
+| api_key_purchase | openrouter, elevenlabs | signup + verify + buy credits + extract API key |
+| giftcard_purchase | bitrefill | buy gift card via Bitrefill |
+| account_bootstrap | bitrefill, x, shopify | create account on provider |
+| x_account_bootstrap | x | create X/Twitter account |
+| x_post | x | post to X/Twitter |
+| cj_account_bootstrap | cj | create CJ Dropshipping account |
+| shopify_store_create | shopify | create Shopify store + API token |
+| shopify_source_products | cj | source products from CJ |
+| shopify_list_products | shopify | list products on Shopify store |
+| shopify_fulfill_orders | shopify | fulfill orders via CJ |
+| shopify_cycle | shopify | full source + list + fulfill cycle |
 
-Bootstrap: \`cj_account_bootstrap\` → \`shopify_store_create\` (metadata: storeName, niche) → \`shopify_cycle\`. All via API; BIP stores creds in agentSecrets.
+## all endpoints
+
+auth:
+- POST /auth/login — returns accessToken + agentId
+- POST /auth/logout — revoke session
+
+identity:
+- POST /api/tools/user_retrieve
+- POST /api/tools/agent_bootstrap — provision email + wallet in one call
+- POST /api/tools/create_agentmail — \`{"email":"prefix@agentmail.to"}\`
+- POST /api/tools/delete_agentmail — \`{"email":"..."}\`
+
+wallet + funding:
+- POST /api/tools/wallet_generate — generate Solana wallet
+- POST /api/tools/wallet_balance — wallet + account balance
+- POST /api/tools/wallet_deposit_address — get deposit address
+- POST /api/tools/wallet_transfer — \`{"fromAddress","toAddress","amountSol"}\`
+- POST /api/tools/account_credit — \`{"amountUsd":20}\` or \`{"amountCents":2000}\`
+- POST /api/tools/register_wallet — register external wallet
+- POST /api/tools/funding_sync — scan chain for deposits, credit ledger
+- POST /api/tools/funding_status — check funding without crediting
+
+intents:
+- POST /api/tools/offering_list — list offerings + policies
+- POST /api/tools/create_intent — \`{"task","intentType","provider","budgetUsd","metadata"}\`
+- POST /api/tools/approve_intent — \`{"intentId"}\`
+- POST /api/tools/execute_intent — \`{"intentId"}\`
+- POST /api/tools/intent_status — status + events + funding
+- POST /api/tools/intent_resume — resume action_required intent
+- POST /api/tools/run_status — execution run details
+- POST /api/tools/spend_summary — aggregate spend
+
+other:
+- POST /api/tools/shopify_register
+- POST /api/tools/secrets_get — \`{"secretRef":"..."}\`
+- POST /api/tools/treasury_card_add (admin)
+- POST /api/tools/treasury_card_list (admin)
+- POST /api/tools/funding_mark_settled (admin)
 
 ## notes
-- no CLI: all operations via POST to \`$BASE/api/tools/*\` with Bearer + \`x-agent-id\`
-- first login: \`x-agent-id: bootstrap\`; persist \`agentId\` + \`accessToken\`
-- offering registry + policy caps + idempotency enforced
-- outputs include run/trace ids and fulfillment artifacts
-- secrets are returned by reference (secretRef)
+- all tool calls: POST with \`Authorization: Bearer <token>\` and \`X-Agent-Id: <agentId>\`
+- first login: \`x-agent-id: bootstrap\` auto-generates an agent ID; persist it
+- auto-approval: budgetUsd <= $10
+- **always generate wallet and get funded before creating intents**
+- bip handles browser automation, email verification, payments, credential storage
 `;
 }
 
-// Shell vars in output — use JS vars so we don't trip template interpolation
 const SH_HOME = "${HOME}";
 const SH_CFG = "${CONFIG_DIR}";
 const SH_AID = "${AGENT_ID}";
@@ -99,6 +166,8 @@ function buildInstallScript(): string {
     "generate_agent_id() {",
     "  if command -v openssl >/dev/null 2>&1; then",
     "    printf 'bip_%s' \"$(openssl rand -hex 12)\"",
+    "  elif [ -c /dev/urandom ]; then",
+    "    printf 'bip_%s' \"$(head -c 12 /dev/urandom | xxd -p -c 24 2>/dev/null || head -c 12 /dev/urandom | od -A n -t x1 | tr -d ' \\n' | head -c 24)\"",
     "  else",
     '    printf \'bip_%s%04d\' "$(date +%s)" "$$"',
     "  fi",
@@ -113,7 +182,11 @@ function buildInstallScript(): string {
     'echo "BIP installed."',
     `echo "  config: ${SH_CFG}"`,
     `echo "  agentId: ${SH_AID}"`,
-    `echo "skill.md: ${SH_BASE}/skill.md"`,
+    'echo ""',
+    'echo "Next steps:"',
+    `echo "  1. Read the skill: curl -s ${SH_BASE}/skill.md"`,
+    `echo "  2. Export: export BIP_AGENT_ID=${SH_AID}"`,
+    `echo "  3. Follow the onboarding steps in skill.md (login → wallet → fund → intents)"`,
   ].join("\n");
 }
 

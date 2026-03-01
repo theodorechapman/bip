@@ -171,20 +171,41 @@ export function buildApiKeyPurchaseTask(input: {
   accountEmailMode: "agentmail" | "existing";
   targetProduct?: string;
 }): string {
+  if (input.accountEmailMode === "agentmail") {
+    return [
+      `[intent=api_key_purchase] [phase=signup] [provider=${input.provider}] [domain=${input.providerDomain}]`,
+      `Goal: Create an account on ${input.providerDomain}. That is ALL you need to do right now.`,
+      "",
+      "Deterministic constraints:",
+      `- Navigate directly to https://${input.providerDomain} only.`,
+      "- Do NOT use search engines, affiliate links, or off-domain merchants.",
+      "- Stay on provider-owned pages for every step.",
+      "",
+      "Your ONLY job is to sign up:",
+      `1) Go to https://${input.providerDomain} and find the signup/register page.`,
+      "2) Fill out the signup form with the email and password from the credentials below.",
+      "3) Submit the signup form.",
+      "4) STOP immediately after submitting.",
+      "",
+      "CRITICAL — what to do after submitting signup:",
+      "- If you see a 'verify your email' or 'check your inbox' screen → report VERIFICATION_NEEDED",
+      "- If signup completes and you land on a dashboard → report SIGNUP_COMPLETE",
+      "- If you hit a CAPTCHA you cannot solve → report BLOCKED_BY_CAPTCHA",
+      "- If something else goes wrong → report FAILED: <reason>",
+      "",
+      "Do NOT attempt to:",
+      "- Open any email inbox or navigate to agentmail.to",
+      "- Add billing or payment information",
+      "- Create API keys",
+      "- Do ANYTHING beyond completing the signup form",
+      "",
+      "Email verification will be handled automatically by the system after you report back.",
+      "Billing, credits, and API key creation will happen in a separate follow-up step.",
+    ].join("\n");
+  }
   const targetProductLine = input.targetProduct
     ? `Target product: ${input.targetProduct}`
     : "Target product: provider default API credits/subscription flow.";
-  const emailVerificationNote =
-    input.accountEmailMode === "agentmail"
-      ? [
-          "IMPORTANT email verification instructions:",
-          "- After submitting the signup form, the site may ask you to verify your email.",
-          "- Do NOT attempt to open the email inbox or navigate to agentmail.to — there is no web UI.",
-          "- Email verification will be handled automatically via API after you finish.",
-          "- If the site shows a 'verify your email' screen, simply report that signup was submitted and verification is pending.",
-          "- Continue with as many remaining steps as possible (some may require verification first — that is OK, just report what happened).",
-        ]
-      : [];
   return [
     `[intent=api_key_purchase] [provider=${input.provider}] [domain=${input.providerDomain}]`,
     `Goal: ${input.task}`,
@@ -192,10 +213,8 @@ export function buildApiKeyPurchaseTask(input: {
     `- Navigate directly to https://${input.providerDomain} only.`,
     "- Do not use search engines, affiliate links, or off-domain merchants.",
     "- Stay on provider-owned pages for every step.",
-    ...emailVerificationNote,
     "Execution steps:",
-    "1) Signup/login on the provider site using the approved account path.",
-    `   accountEmailMode=${input.accountEmailMode}`,
+    "1) Login on the provider site using the existing account credentials below.",
     `2) Open billing/credits on ${input.providerDomain}.`,
     `3) Complete credits/subscription purchase as needed. ${targetProductLine}`,
     "4) Open API keys page and create a new key.",

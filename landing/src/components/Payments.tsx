@@ -38,7 +38,7 @@ function X402Flow() {
         {activeSteps.map((s, i) => (
           <div key={i} className="flex items-center gap-2" style={{ opacity: s.opacity, color: s.col }}>
             <span className="w-16 text-right text-xs text-white/25 flex-shrink-0">{s.from}</span>
-            <span className="text-white/15">→</span>
+            <span className="text-white/15">to</span>
             <span className="w-16 text-xs text-white/25 flex-shrink-0">{s.to}</span>
             <span className="text-white/10 flex-shrink-0">│</span>
             <span className="truncate">{s.msg}</span>
@@ -46,7 +46,7 @@ function X402Flow() {
         ))}
         {step > steps.length && (
           <div className="pt-2 border-t border-white/5">
-            <span className="text-[#05D96A]/60">✓ complete · no form, no human, no checkout</span>
+            <span className="text-[#05D96A]/60">done · no form, no human, no checkout</span>
           </div>
         )}
       </div>
@@ -105,7 +105,7 @@ function CheckoutFlow() {
         ))}
         {filled >= fields.length && (
           <div className="pt-2 border-t border-white/5">
-            <span className="text-[#00D9AA]/60">✓ order placed · real Visa · real money</span>
+            <span className="text-[#00D9AA]/60">done · order placed · real Visa · real money</span>
           </div>
         )}
       </div>
@@ -207,7 +207,7 @@ export default function Payments() {
         <div className="pay-flows grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
           <div className="pay-cell">
             <p className="font-mono text-sm text-white/30 tracking-[0.2em] mb-4">
-              Mode 1 — x402 (Agent → Agent)
+              Mode 1 — x402 (Agent to Agent)
             </p>
             <X402Flow />
             <p className="text-white/25 text-base font-light mt-4 leading-relaxed">
@@ -218,7 +218,7 @@ export default function Payments() {
           </div>
           <div className="pay-cell">
             <p className="font-mono text-sm text-white/30 tracking-[0.2em] mb-4">
-              Mode 2 — Checkout fill (Agent → Web)
+              Mode 2 — Checkout fill (Agent to Web)
             </p>
             <CheckoutFlow />
             <p className="text-white/25 text-base font-light mt-4 leading-relaxed">

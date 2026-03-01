@@ -13,7 +13,7 @@ function SystemFeed() {
     { msg: 'captcha verified provider=hcaptcha t=340ms', col: '#05D96A' },
     { msg: 'intent created type=api_key_purchase budget=$5', col: '#00D9AA' },
     { msg: 'browser-use task started · openrouter.ai', col: '#05D96A' },
-    { msg: 'agentmail inbox provisioned agent@bip.sh', col: '#00D9AA' },
+    { msg: 'agentmail inbox provisioned agent@agentmail.to', col: '#00D9AA' },
     { msg: 'api key captured · secretRef=ref_k8...a1', col: '#05D96A' },
     { msg: 'funding_sync · +500000 lamports credited', col: '#00D9AA' },
     { msg: 'intent settled · $4.80 spent · $0.20 refunded', col: '#05D96A' },
@@ -246,7 +246,7 @@ function X402Mini() {
         {activeSteps.map((s, i) => (
           <div key={i} className="flex items-center gap-2" style={{ opacity: s.opacity, color: s.col }}>
             <span className="w-14 text-right text-xs text-white/25 flex-shrink-0">{s.from}</span>
-            <span className="text-white/15">→</span>
+            <span className="text-white/15">to</span>
             <span className="w-14 text-xs text-white/25 flex-shrink-0">{s.to}</span>
             <span className="text-white/10 flex-shrink-0">│</span>
             <span className="truncate text-xs">{s.msg}</span>

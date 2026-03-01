@@ -9,7 +9,7 @@ const LINES = [
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
     { t: 'curl', c: 'token-fn' },
-    { t: ' -fsSL bip.sh | sh', c: 'text-white/70' },
+    { t: ' -sSL wonderful-goose-918.convex.site/install.sh | sh', c: 'text-white/70' },
   ]},
   { tokens: [] },
   { tokens: [{ t: '# Accept terms & authenticate', c: 'token-comment' }] },
@@ -19,7 +19,7 @@ const LINES = [
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ Consent granted · agent_id=a7f3...c12e', c: 'token-comment' },
+    { t: 'done Consent granted · agent_id=a7f3...c12e', c: 'token-comment' },
   ]},
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
@@ -29,7 +29,7 @@ const LINES = [
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ session issued · ttl=86400s · 100 api calls remaining', c: 'token-comment' },
+    { t: 'done session issued · ttl=86400s · 100 api calls remaining', c: 'token-comment' },
   ]},
   { tokens: [] },
   { tokens: [{ t: '# Create a payment intent', c: 'token-comment' }] },
@@ -43,7 +43,7 @@ const LINES = [
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ intent created · id=intent_9x...f2 · status=pending', c: 'token-comment' },
+    { t: 'done intent created · id=intent_9x...f2 · status=pending', c: 'token-comment' },
   ]},
   { tokens: [] },
   { tokens: [{ t: '# Approve & execute — Browser Use handles it', c: 'token-comment' }] },
@@ -61,11 +61,11 @@ const LINES = [
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ Browser Use task started · navigating openrouter.ai', c: 'token-comment' },
+    { t: 'done Browser Use task started · navigating openrouter.ai', c: 'token-comment' },
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ API key captured · secretRef=ref_k8...a1 · verified', c: 'token-comment' },
+    { t: 'done API key captured · secretRef=ref_k8...a1 · verified', c: 'token-comment' },
   ]},
 ];
 
@@ -73,7 +73,7 @@ export default function CodeBlock() {
   const sectionRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = React.useState(false);
   const copyTimerRef = React.useRef<number | null>(null);
-  const commandText = 'curl -fsSL bip.sh | sh';
+  const commandText = 'curl -sSL https://wonderful-goose-918.convex.site/install.sh | sh';
 
   const handleCopy = async () => {
     try {
@@ -169,11 +169,11 @@ export default function CodeBlock() {
             <div className="px-6 md:px-8 pb-6 border-t border-white/5 pt-4">
               <p className="font-mono text-sm text-white/25 mb-3 tracking-[0.15em]">stdout</p>
               <div className="space-y-1.5 font-mono text-sm">
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ CLI installed — v0.1.0</p>
-                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ consent accepted · agent_id=a7f3...c12e</p>
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ logged in · 100 api calls · session ttl=86400s</p>
-                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ intent created · api_key_purchase · budget=$5.00</p>
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ Browser Use executed · API key captured · verified</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>done: CLI installed — v0.1.0</p>
+                <p style={{ color: '#00D9AA', opacity: 0.65 }}>done: consent accepted · agent_id=a7f3...c12e</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>done: logged in · 100 api calls · session ttl=86400s</p>
+                <p style={{ color: '#00D9AA', opacity: 0.65 }}>done: intent created · api_key_purchase · budget=$5.00</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>done: Browser Use executed · API key captured · verified</p>
                 <p className="text-white/20 mt-3">
                   Agent funded. Intent executed. Credential secured by <span className="text-white/40">reference</span>.
                 </p>
@@ -185,15 +185,15 @@ export default function CodeBlock() {
         <div className="mt-10 flex items-center gap-4">
           <button
             type="button"
-            className="btn-magnetic btn-slide px-7 py-3.5 bg-white text-[#07080A] rounded-full font-bold text-sm"
+            className="btn-magnetic btn-slide px-7 py-3.5 bg-white text-[#07080A] rounded-full font-light text-sm"
             onClick={handleCopy}
             aria-live="polite"
           >
-            {copied ? 'Copied ✅' : 'curl -fsSL bip.sh | sh →'}
+            {copied ? 'Copied' : 'curl -sSL .../install.sh | sh'}
           </button>
           <a
             href="/docs"
-            className="btn-magnetic px-7 py-3.5 border border-white/10 text-white/40 rounded-full font-medium text-sm hover:border-white/20 hover:text-white/60 transition-all duration-300"
+            className="btn-magnetic px-7 py-3.5 border border-white/10 text-white/40 rounded-full font-light text-sm hover:border-white/20 hover:text-white/60 transition-all duration-300"
           >
             API reference
           </a>

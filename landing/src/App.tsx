@@ -7,7 +7,7 @@ import Hero from './components/Hero';
 import TrustBar from './components/TrustBar';
 import Features from './components/Features';
 import Philosophy from './components/Philosophy';
-import CodeBlock from './components/CodeBlock';
+import MediaSection from './components/MediaSection';
 import Payments from './components/Payments';
 import Waitlist from './components/Waitlist';
 import Footer from './components/Footer';
@@ -33,7 +33,7 @@ function HomePage() {
         <Features />
         <Philosophy />
         <Payments />
-        <CodeBlock />
+        <MediaSection />
         <Waitlist />
         <Footer />
       </main>
