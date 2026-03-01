@@ -1,6 +1,7 @@
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { Keypair } from "@solana/web3.js";
 
 function randomId(prefix: string): string {
   const values = new Uint8Array(8);
@@ -158,6 +159,38 @@ async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promis
 }
 
 
+
+
+async function callBitrefillPurchase(input: { productId?: string; amount?: number; recipientEmail?: string; note?: string }): Promise<{ ok: boolean; orderId?: string; code?: string; raw?: unknown; error?: string; }> {
+  const apiKey = (process.env.BITREFILL_API_KEY ?? "").trim();
+  if (!apiKey) return { ok: false, error: "BITREFILL_API_KEY not configured" };
+  const base = (process.env.BITREFILL_API_BASE ?? "https://api.bitrefill.com").trim();
+
+  const createResp = await fetch(`${base}/v2/orders`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      productId: input.productId,
+      amount: input.amount,
+      recipientEmail: input.recipientEmail,
+      note: input.note,
+    }),
+  });
+
+  const bodyText = await createResp.text();
+  let body: any = null;
+  try { body = bodyText ? JSON.parse(bodyText) : null; } catch { body = { raw: bodyText }; }
+  if (!createResp.ok) {
+    return { ok: false, error: `bitrefill order failed (${createResp.status})`, raw: body };
+  }
+
+  const orderId = body?.id ?? body?.orderId ?? null;
+  const code = body?.code ?? body?.voucherCode ?? body?.claimCode ?? null;
+  return { ok: true, orderId: orderId ?? undefined, code: code ?? undefined, raw: body };
+}
 function buildBrowserUseHandoffUrl(taskId: string | undefined): string | null {
   if (!taskId) return null;
   const template = (process.env.BROWSER_USE_TASK_URL_TEMPLATE ?? "https://cloud.browser-use.com/tasks/{taskId}").trim();
@@ -191,6 +224,40 @@ function extractLikelyApiKey(output: unknown): string | null {
   }
   return null;
 }
+
+export const generateWallet = internalMutation({
+  args: {
+    userId: v.id("users"),
+    chain: v.string(),
+    label: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const createdAt = now();
+    if (args.chain !== "solana") {
+      throw new Error("only solana wallet generation is currently supported");
+    }
+    const kp = Keypair.generate();
+    const address = kp.publicKey.toBase58();
+    const secretRef = randomId("sec");
+    await ctx.db.insert("agentWallets", {
+      userId: args.userId,
+      chain: args.chain,
+      address,
+      label: args.label ?? null,
+      createdAt,
+    });
+    await ctx.db.insert("agentSecrets", {
+      secretRef,
+      userId: args.userId,
+      intentId: undefined,
+      provider: "wallet",
+      secretType: "solana_private_key_base64",
+      secretValue: Array.from(kp.secretKey).map((b) => b.toString(16).padStart(2, "0")).join(""),
+      createdAt,
+    });
+    return { ok: true, chain: args.chain, address, secretRef };
+  },
+});
 
 export const registerWallet = internalMutation({
   args: {
@@ -487,6 +554,74 @@ export const executeIntent = internalAction({
       task: intent.task,
       startedAt: ts,
     });
+
+    // Real bitrefill adapter path (if selected)
+    if (resolvedRail === "bitrefill") {
+      let meta: any = null;
+      try { meta = intent.metadataJson ? JSON.parse(intent.metadataJson) : null; } catch { meta = null; }
+      const br = await callBitrefillPurchase({
+        productId: meta?.productId,
+        amount: typeof meta?.amount === "number" ? meta.amount : intent.budgetUsd,
+        recipientEmail: typeof meta?.recipientEmail === "string" ? meta.recipientEmail : undefined,
+        note: typeof meta?.note === "string" ? meta.note : undefined,
+      });
+      const doneTs = now();
+      if (!br.ok) {
+        await ctx.runMutation(payments._updateRun, {
+          runId,
+          status: "failed",
+          outputJson: br.raw ? JSON.stringify(br.raw) : null,
+          error: br.error ?? "bitrefill_failed",
+          updatedAt: doneTs,
+        });
+        await ctx.runMutation(payments._releaseHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "execution_failed",
+          refId: runId,
+        });
+        await ctx.runMutation(payments._setIntentStatus, {
+          intentId: intent.intentId,
+          status: "failed",
+          updatedAt: doneTs,
+        });
+        await ctx.runMutation(payments._recordEvent, {
+          intentId: intent.intentId,
+          eventType: "intent_execution_failed",
+          payloadJson: JSON.stringify({ runId, error: br.error ?? "bitrefill_failed" }),
+          createdAt: doneTs,
+        });
+        return { runId, status: "failed", error: br.error ?? "bitrefill_failed" };
+      }
+
+      await ctx.runMutation(payments._updateRun, {
+        runId,
+        status: "ok",
+        outputJson: JSON.stringify({ rail: "bitrefill", orderId: br.orderId ?? null, code: br.code ?? null, raw: br.raw ?? null }),
+        error: null,
+        updatedAt: doneTs,
+      });
+      await ctx.runMutation(payments._settleHeldFundsForIntent, {
+        userId: intent.userId,
+        intentId: intent.intentId,
+        amountCents: holdAmountCents,
+        refType: "bitrefill_order",
+        refId: br.orderId ?? runId,
+      });
+      await ctx.runMutation(payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "confirmed",
+        updatedAt: doneTs,
+      });
+      await ctx.runMutation(payments._recordEvent, {
+        intentId: intent.intentId,
+        eventType: "intent_execution_confirmed",
+        payloadJson: JSON.stringify({ runId, rail: "bitrefill", orderId: br.orderId ?? null }),
+        createdAt: doneTs,
+      });
+      return { runId, status: "ok", rail: "bitrefill", orderId: br.orderId ?? null, code: br.code ?? null, traceId };
+    }
 
     const buTask = `[rail=${resolvedRail}] ${intent.task}`;
     const buResult = await callBrowserUseTask(buTask, args.apiKey);

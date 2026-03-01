@@ -449,6 +449,29 @@ http.route({
   }),
 });
 
+
+http.route({
+  path: "/api/tools/wallet_generate",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "wallet_generate");
+      if (!auth.ok) return auth.response;
+      const body = await req.json().catch(() => ({}));
+      const payload = body as { chain?: unknown; label?: unknown };
+      const chain = typeof payload.chain === "string" ? payload.chain : "solana";
+      const out = await ctx.runMutation(internal.payments.generateWallet, {
+        userId: auth.session.userId,
+        chain,
+        label: typeof payload.label === "string" ? payload.label : undefined,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
 http.route({
   path: "/api/tools/wallet_balance",
   method: "POST",
@@ -523,11 +546,9 @@ http.route({
         inbox = { ok: false, error: "agentmail_unavailable" };
       }
 
-      const walletAddress = `agt_${chain}_${auth.session.agentId}`;
-      const wallet = await ctx.runMutation(internal.payments.registerWallet, {
+      const wallet = await ctx.runMutation(internal.payments.generateWallet, {
         userId: auth.session.userId,
         chain,
-        address: walletAddress,
         label: "bootstrap",
       });
 
