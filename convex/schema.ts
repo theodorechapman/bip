@@ -50,7 +50,7 @@ export default defineSchema({
 
   agentWallets: defineTable({
     userId: v.id("users"),
-    chain: v.string(), // solana
+    chain: v.string(),
     address: v.string(),
     label: v.union(v.string(), v.null()),
     createdAt: v.number(),
@@ -58,13 +58,38 @@ export default defineSchema({
     .index("by_user_id_and_created_at", ["userId", "createdAt"])
     .index("by_user_id_and_chain", ["userId", "chain"]),
 
+  agentAccounts: defineTable({
+    userId: v.id("users"),
+    currency: v.string(),
+    availableCents: v.number(),
+    heldCents: v.number(),
+    status: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_id", ["userId"]),
+
+  ledgerEntries: defineTable({
+    entryId: v.string(),
+    userId: v.id("users"),
+    intentId: v.optional(v.string()),
+    type: v.string(),
+    amountCents: v.number(),
+    balanceAfterAvailableCents: v.number(),
+    balanceAfterHeldCents: v.number(),
+    refType: v.optional(v.string()),
+    refId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_entry_id", ["entryId"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
   paymentIntents: defineTable({
     userId: v.id("users"),
     intentId: v.string(),
     task: v.string(),
     budgetUsd: v.number(),
-    rail: v.string(), // auto|x402|bitrefill|card
-    status: v.string(), // drafted|needs_approval|approved|submitted|confirmed|failed
+    rail: v.string(),
+    status: v.string(),
     approvalRequired: v.boolean(),
     approvedBy: v.union(v.string(), v.null()),
     runId: v.union(v.string(), v.null()),
@@ -85,7 +110,7 @@ export default defineSchema({
     runId: v.string(),
     intentId: v.string(),
     userId: v.id("users"),
-    status: v.string(), // queued|running|ok|failed
+    status: v.string(),
     outputJson: v.union(v.string(), v.null()),
     error: v.union(v.string(), v.null()),
     createdAt: v.number(),

@@ -463,7 +463,36 @@ http.route({
         userId: auth.session.userId,
         chain,
       });
-      return json(200, { chain, wallet });
+      const account = await ctx.runQuery(internal.payments._getAccount, {
+        userId: auth.session.userId,
+      });
+      return json(200, { chain, wallet, account });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+
+http.route({
+  path: "/api/tools/wallet_deposit",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "wallet_deposit");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { amountCents?: unknown; refType?: unknown; refId?: unknown };
+      if (typeof payload.amountCents !== "number" || payload.amountCents <= 0) {
+        return json(400, { error: "amountCents must be a positive number" });
+      }
+      const out = await ctx.runMutation(internal.payments._creditUserFunds, {
+        userId: auth.session.userId,
+        amountCents: Math.round(payload.amountCents),
+        refType: typeof payload.refType === "string" ? payload.refType : undefined,
+        refId: typeof payload.refId === "string" ? payload.refId : undefined,
+      });
+      return json(200, out);
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
