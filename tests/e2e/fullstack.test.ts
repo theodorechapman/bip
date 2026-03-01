@@ -207,7 +207,7 @@ async function startLocalConvexDev(): Promise<void> {
     stderr: "pipe",
   });
 
-  await waitForHttpReady(`${CONVEX_SITE_URL}/auth/login`, 45_000);
+  await waitForHttpReady(`${CONVEX_SITE_URL}/cli/manifest.json`, 45_000);
 }
 
 function stopLocalConvexDev(): void {
@@ -460,16 +460,23 @@ async function postJson(
 }
 
 async function login(agentId: string): Promise<LoginSuccess> {
-  const response = await postJson(
-    "/auth/login",
-    {
-      captchaToken: HCAPTCHA_VALID_TOKEN,
-      inviteCode: INVITE_CODE,
-    },
+  const challengeResp = await postJson(
+    "/auth/captcha-challenge",
+    { inviteCode: INVITE_CODE },
     { agentId },
   );
-  expect(response.status).toBe(200);
-  return response.json as unknown as LoginSuccess;
+  expect(challengeResp.status).toBe(200);
+  const challengeId = challengeResp.json.challengeId as string;
+
+  const callbackResp = await postJson("/auth/captcha-callback", {
+    challengeId,
+    captchaToken: HCAPTCHA_VALID_TOKEN,
+  });
+  expect(callbackResp.status).toBe(200);
+
+  const pollResp = await postJson("/auth/captcha-poll", { challengeId });
+  expect(pollResp.status).toBe(200);
+  return pollResp.json as unknown as LoginSuccess;
 }
 
 async function runCli(
@@ -509,10 +516,12 @@ describe("Auth + Tool API", () => {
     const manifest = (await manifestResponse.json()) as {
       installUrl?: unknown;
       cliUrl?: unknown;
+      captchaUrl?: unknown;
       quickInstall?: unknown;
     };
     expect(manifest.installUrl).toBe(`${CONVEX_SITE_URL}/cli/install.sh`);
     expect(manifest.cliUrl).toBe(`${CONVEX_SITE_URL}/cli/bip.mjs`);
+    expect(manifest.captchaUrl).toBe(`${CONVEX_SITE_URL}/cli/hcaptcha`);
     expect(manifest.quickInstall).toBe(
       `curl -fsSL ${CONVEX_SITE_URL}/cli/install.sh | sh`,
     );
@@ -526,49 +535,20 @@ describe("Auth + Tool API", () => {
     const publicCliResponse = await fetch(`${CONVEX_SITE_URL}/cli/bip.mjs`);
     expect(publicCliResponse.status).toBe(200);
     const publicCliSource = await publicCliResponse.text();
+    expect(publicCliSource).toContain(`const CLI_VERSION = "0.1.0-public";`);
     expect(publicCliSource).toContain(
       `const DEFAULT_BASE_URL = "${CONVEX_SITE_URL}";`,
     );
     expect(publicCliSource).toContain("create_agentmail");
     expect(publicCliSource).toContain("delete_agentmail");
-  });
+    expect(publicCliSource).toContain("/auth/captcha-challenge");
+    expect(publicCliSource).not.toContain("10000000-aaaa-bbbb-cccc-000000000001");
 
-  test("rejects login without invite code", async () => {
-    const response = await postJson(
-      "/auth/login",
-      {
-        captchaToken: HCAPTCHA_VALID_TOKEN,
-      },
-      { agentId: `agent-${crypto.randomUUID()}` },
-    );
-    expect(response.status).toBe(400);
-    expect(response.json.error).toBe("captchaToken and inviteCode are required");
-  });
-
-  test("rejects login with invalid invite code", async () => {
-    const response = await postJson(
-      "/auth/login",
-      {
-        captchaToken: HCAPTCHA_VALID_TOKEN,
-        inviteCode: "bad-invite",
-      },
-      { agentId: `agent-${crypto.randomUUID()}` },
-    );
-    expect(response.status).toBe(403);
-    expect(response.json.error).toBe("Invalid invite code");
-  });
-
-  test("rejects login with invalid hcaptcha token", async () => {
-    const response = await postJson(
-      "/auth/login",
-      {
-        captchaToken: HCAPTCHA_INVALID_TOKEN,
-        inviteCode: INVITE_CODE,
-      },
-      { agentId: `agent-${crypto.randomUUID()}` },
-    );
-    expect(response.status).toBe(401);
-    expect(response.json.error).toBe("hCaptcha verification failed");
+    const captchaPageResponse = await fetch(`${CONVEX_SITE_URL}/cli/hcaptcha`);
+    expect(captchaPageResponse.status).toBe(200);
+    const captchaPage = await captchaPageResponse.text();
+    expect(captchaPage).toContain('id="hcaptcha-container"');
+    expect(captchaPage).toContain(`sitekey: "${HCAPTCHA_SITE_KEY}"`);
   });
 
   test("issues 24h session token and enforces per-session call limit", async () => {
@@ -673,6 +653,88 @@ describe("Auth + Tool API", () => {
     expect(cleanupFourth.json.ok).toBe(true);
   });
 
+  test("device flow: create challenge, callback, poll", async () => {
+    const agentId = `agent-${crypto.randomUUID()}`;
+
+    // Create challenge
+    const challengeResp = await postJson(
+      "/auth/captcha-challenge",
+      { inviteCode: INVITE_CODE },
+      { agentId },
+    );
+    expect(challengeResp.status).toBe(200);
+    expect(typeof challengeResp.json.challengeId).toBe("string");
+    expect(typeof challengeResp.json.captchaUrl).toBe("string");
+    const challengeId = challengeResp.json.challengeId as string;
+
+    // Poll should return pending
+    const pendingResp = await postJson("/auth/captcha-poll", { challengeId });
+    expect(pendingResp.status).toBe(202);
+    expect(pendingResp.json.status).toBe("pending");
+
+    // Callback with invalid captcha should fail
+    const badCallback = await postJson("/auth/captcha-callback", {
+      challengeId,
+      captchaToken: HCAPTCHA_INVALID_TOKEN,
+    });
+    expect(badCallback.status).toBe(401);
+
+    // Callback with valid captcha should succeed
+    const goodCallback = await postJson("/auth/captcha-callback", {
+      challengeId,
+      captchaToken: HCAPTCHA_VALID_TOKEN,
+    });
+    expect(goodCallback.status).toBe(200);
+    expect(goodCallback.json.ok).toBe(true);
+
+    // Poll should return completed with access token
+    const completedResp = await postJson("/auth/captcha-poll", { challengeId });
+    expect(completedResp.status).toBe(200);
+    expect(completedResp.json.status).toBe("completed");
+    expect(typeof completedResp.json.accessToken).toBe("string");
+    expect(typeof completedResp.json.expiresAt).toBe("number");
+    expect(completedResp.json.maxApiCalls).toBe(SESSION_API_CALL_LIMIT);
+
+    // Token should work for API calls
+    const userResp = await postJson(
+      "/api/tools/user_retrieve",
+      {},
+      { token: completedResp.json.accessToken as string },
+    );
+    expect(userResp.status).toBe(200);
+    expect(userResp.json.agentId).toBe(agentId.toLowerCase());
+  });
+
+  test("device flow: rejects challenge with invalid invite code", async () => {
+    const resp = await postJson(
+      "/auth/captcha-challenge",
+      { inviteCode: "bad-code" },
+      { agentId: `agent-${crypto.randomUUID()}` },
+    );
+    expect(resp.status).toBe(403);
+  });
+
+  test("device flow: rejects callback for already-completed challenge", async () => {
+    const agentId = `agent-${crypto.randomUUID()}`;
+    const challengeResp = await postJson(
+      "/auth/captcha-challenge",
+      { inviteCode: INVITE_CODE },
+      { agentId },
+    );
+    const challengeId = challengeResp.json.challengeId as string;
+
+    await postJson("/auth/captcha-callback", {
+      challengeId,
+      captchaToken: HCAPTCHA_VALID_TOKEN,
+    });
+
+    const secondCallback = await postJson("/auth/captcha-callback", {
+      challengeId,
+      captchaToken: HCAPTCHA_VALID_TOKEN,
+    });
+    expect(secondCallback.status).toBe(400);
+  });
+
   test("logout revokes access token", async () => {
     const auth = await login(`agent-${crypto.randomUUID()}`);
     const beforeLogout = await postJson(
@@ -721,11 +783,44 @@ describe("CLI", () => {
     const consentJson = parseCliJson(consent.stdout);
     expect(typeof consentJson.agentId).toBe("string");
 
-    const loginOut = await runCli(
-      ["login", "--captcha-token", HCAPTCHA_VALID_TOKEN],
-      envOverrides,
-    );
-    const loginJson = parseCliJson(loginOut.stdout);
+    // Start login in background (it polls for captcha completion)
+    const loginProcess = Bun.spawn({
+      cmd: ["bun", "src/cli.ts", "--json", "login"],
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...envOverrides },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    // Wait for stderr to contain the captcha URL with challenge ID
+    const stderrReader = loginProcess.stderr.getReader();
+    let stderrText = "";
+    const stderrStarted = Date.now();
+    while (Date.now() - stderrStarted < 15_000) {
+      const { value, done } = await stderrReader.read();
+      if (done) break;
+      stderrText += new TextDecoder().decode(value);
+      if (stderrText.includes("challenge=")) break;
+    }
+    stderrReader.releaseLock();
+    const challengeMatch = stderrText.match(/challenge=([a-f0-9]+)/);
+    expect(challengeMatch).not.toBeNull();
+    const challengeId = challengeMatch![1];
+
+    // Complete the captcha challenge via API
+    const callbackResp = await postJson("/auth/captcha-callback", {
+      challengeId,
+      captchaToken: HCAPTCHA_VALID_TOKEN,
+    });
+    expect(callbackResp.status).toBe(200);
+
+    // Wait for CLI to finish
+    const [exitCode, stdout] = await Promise.all([
+      loginProcess.exited,
+      new Response(loginProcess.stdout).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    const loginJson = parseCliJson(stdout);
     expect(loginJson.ok).toBe(true);
     expect(loginJson.maxApiCalls).toBe(SESSION_API_CALL_LIMIT);
 

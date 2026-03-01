@@ -45,13 +45,6 @@ type EncryptedEnvelope = {
   data: string;
 };
 
-type LoginResponse = {
-  accessToken: string;
-  expiresAt: number;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
 type UserRetrieveResponse = {
   id: string;
   email: string | null;
@@ -89,7 +82,6 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_KEY_LEN = 32;
 const SCRYPT_MAX_MEM = 512 * 1024 * 1024;
-const HCAPTCHA_TEST_RESPONSE_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001";
 const INVITE_CODE_ENV_VAR = "BIP_INVITE_CODE";
 
 class ApiError extends Error {
@@ -402,12 +394,7 @@ program
     "--invite-code <inviteCode>",
     `Invite code (or set ${INVITE_CODE_ENV_VAR})`,
   )
-  .option(
-    "--captcha-token <captchaToken>",
-    "hCaptcha response token",
-    HCAPTCHA_TEST_RESPONSE_TOKEN,
-  )
-  .action(async (args: { inviteCode?: string; captchaToken: string }) => {
+  .action(async (args: { inviteCode?: string }) => {
     requireConsent();
     const inviteCode =
       args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
@@ -417,30 +404,65 @@ program
       );
     }
     const baseUrl = getConfig().baseUrl;
-    const result = await postJson<LoginResponse>(
+    const challenge = await postJson<{ challengeId: string; captchaUrl: string }>(
       baseUrl,
-      "/auth/login",
-      {
-        captchaToken: args.captchaToken,
-        inviteCode,
-      },
+      "/auth/captcha-challenge",
+      { inviteCode },
       null,
     );
-    saveCredentials({
-      accessToken: result.accessToken,
-      expiresAt: result.expiresAt * 1000,
-      baseUrl,
-    });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(
-      {
-        ok: true,
-        expiresAt: new Date(result.expiresAt * 1000).toISOString(),
-        maxApiCalls: result.maxApiCalls,
-        remainingApiCalls: result.remainingApiCalls,
-      },
-      Boolean(globalOpts.json),
-    );
+    console.log("Open this URL to solve the captcha:");
+    console.log(challenge.captchaUrl);
+    try {
+      const { execSync } = await import("node:child_process");
+      const platform = process.platform;
+      if (platform === "darwin") {
+        execSync(`open "${challenge.captchaUrl}"`, { stdio: "ignore" });
+      } else if (platform === "linux") {
+        execSync(`xdg-open "${challenge.captchaUrl}" 2>/dev/null || true`, { stdio: "ignore" });
+      } else if (platform === "win32") {
+        execSync(`start "" "${challenge.captchaUrl}"`, { stdio: "ignore" });
+      }
+    } catch {
+      // browser open is best-effort
+    }
+    console.error("Waiting for captcha to be solved...");
+    const POLL_INTERVAL = 2000;
+    const POLL_TIMEOUT = 5 * 60 * 1000;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < POLL_TIMEOUT) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+      const pollResult = await postJson<{
+        status: string;
+        accessToken?: string;
+        expiresAt?: number;
+        maxApiCalls?: number;
+        remainingApiCalls?: number;
+      }>(
+        baseUrl,
+        "/auth/captcha-poll",
+        { challengeId: challenge.challengeId },
+        null,
+      );
+      if (pollResult.status === "completed" && pollResult.accessToken !== undefined) {
+        saveCredentials({
+          accessToken: pollResult.accessToken,
+          expiresAt: (pollResult.expiresAt ?? 0) * 1000,
+          baseUrl,
+        });
+        const globalOpts = program.opts<{ json?: boolean }>();
+        print(
+          {
+            ok: true,
+            expiresAt: new Date((pollResult.expiresAt ?? 0) * 1000).toISOString(),
+            maxApiCalls: pollResult.maxApiCalls,
+            remainingApiCalls: pollResult.remainingApiCalls,
+          },
+          Boolean(globalOpts.json),
+        );
+        return;
+      }
+    }
+    throw new Error("Timed out waiting for captcha to be solved (5 minutes).");
   });
 
 program.command("logout").action(async () => {

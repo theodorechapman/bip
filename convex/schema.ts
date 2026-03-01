@@ -36,6 +36,19 @@ export default defineSchema({
     ])
     .index("by_action_and_ip_and_created_at", ["action", "ip", "createdAt"]),
 
+  captchaChallenges: defineTable({
+    challengeId: v.string(),
+    agentId: v.string(),
+    inviteCode: v.string(),
+    ip: v.string(),
+    status: v.union(v.literal("pending"), v.literal("completed")),
+    loginResult: v.union(v.string(), v.null()),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_challenge_id", ["challengeId"])
+    .index("by_agent_id_and_created_at", ["agentId", "createdAt"]),
+
   agentmailInboxes: defineTable({
     userId: v.id("users"),
     requestedEmail: v.string(),

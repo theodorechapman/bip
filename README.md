@@ -45,7 +45,9 @@ Then use the installed `bip` command:
 ```bash
 bip config:set-base-url --url https://exciting-stingray-685.convex.site
 bip consent accept
-bip login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
+# solve challenge in browser and copy token
+open https://exciting-stingray-685.convex.site/cli/hcaptcha
+bip login --invite-code "<invite-code>" --captcha-token "<captcha-token-from-browser>"
 bip user retrieve
 bip create_agentmail --email openclaw-demo@yourdomain.com
 bip delete_agentmail --inbox-id openclaw-demo@yourdomain.com
@@ -55,6 +57,12 @@ Manifest endpoint:
 
 ```bash
 curl -fsSL https://exciting-stingray-685.convex.site/cli/manifest.json
+```
+
+hCaptcha challenge page:
+
+```bash
+open https://exciting-stingray-685.convex.site/cli/hcaptcha
 ```
 
 The public CLI sends `X-Agent-Id` from local consent metadata and receives a session token valid for 24 hours.
@@ -101,10 +109,7 @@ bunx convex env set --prod HCAPTCHA_SECRET_KEY "<your-hcaptcha-secret>"
 bunx convex env set --prod HCAPTCHA_SITE_KEY "<your-hcaptcha-site-key>"
 ```
 
-For test/demo mode with hCaptcha test keys, use:
-
-- `HCAPTCHA_SITE_KEY=10000000-ffff-ffff-ffff-000000000001`
-- `HCAPTCHA_SECRET_KEY=0x0000000000000000000000000000000000000000`
+For production, use real hCaptcha keys. Do not keep test keys in prod.
 
 ### AgentMail setup
 
@@ -132,7 +137,7 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 - `consent accept`
 - `consent check`
 - `config:set-base-url --url <url>`
-- `login --invite-code <code> [--captcha-token <token>]`
+- `login --invite-code <code> --captcha-token <token>`
 - `user retrieve`
 - `create_agentmail --email <email>`
 - `delete_agentmail --inbox-id <inboxId>`

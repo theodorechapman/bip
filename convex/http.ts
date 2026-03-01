@@ -4,6 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 import {
   buildCliManifest,
+  renderHcaptchaPage,
   renderInstallScript,
   renderPublicCliScript,
 } from "./publicCliAssets";
@@ -211,6 +212,22 @@ http.route({
 });
 
 http.route({
+  path: "/cli/hcaptcha",
+  method: "GET",
+  handler: httpAction(async (_ctx, _req) => {
+    const siteKey = process.env.HCAPTCHA_SITE_KEY?.trim();
+    if (siteKey === undefined || siteKey.length === 0) {
+      return text(
+        500,
+        "HCAPTCHA_SITE_KEY is not configured for this deployment.",
+        "text/plain; charset=utf-8",
+      );
+    }
+    return text(200, renderHcaptchaPage(siteKey), "text/html; charset=utf-8");
+  }),
+});
+
+http.route({
   path: "/cli/bip.mjs",
   method: "GET",
   handler: httpAction(async (_ctx, req) => {
@@ -220,19 +237,23 @@ http.route({
 });
 
 http.route({
-  path: "/auth/login",
+  path: "/auth/captcha-challenge",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
     try {
       const body = await req.json();
-      const payload = body as { captchaToken?: unknown; inviteCode?: unknown };
-      if (
-        typeof payload.captchaToken !== "string" ||
-        typeof payload.inviteCode !== "string"
-      ) {
-        return json(400, { error: "captchaToken and inviteCode are required" });
+      const payload = body as { inviteCode?: unknown };
+      if (typeof payload.inviteCode !== "string") {
+        return json(400, { error: "inviteCode is required" });
+      }
+      const inviteCode = payload.inviteCode.trim();
+      if (inviteCode.length === 0) {
+        return json(400, { error: "inviteCode must not be empty" });
       }
       const inviteCodes = getConfiguredInviteCodes();
+      if (!inviteCodes.includes(inviteCode)) {
+        return json(403, { error: "Invalid invite code" });
+      }
       const agentId = getAgentId(req);
       if (agentId === null) {
         return json(400, { error: "X-Agent-Id header is required" });
@@ -250,38 +271,70 @@ http.route({
           retryAfterSeconds: loginRateLimit.retryAfterSeconds,
         });
       }
-      await ctx.runMutation(internal.auth.recordAuthAttempt, {
-        action: "login",
-        subject: agentId,
+      const result = await ctx.runMutation(internal.auth.createCaptchaChallenge, {
+        agentId,
+        inviteCode,
         ip,
       });
+      const origin = getRequestOrigin(req);
+      return json(200, {
+        challengeId: result.challengeId,
+        captchaUrl: `${origin}/cli/hcaptcha?challenge=${result.challengeId}`,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/auth/captcha-callback",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const body = await req.json();
+      const payload = body as { challengeId?: unknown; captchaToken?: unknown };
+      if (typeof payload.challengeId !== "string" || typeof payload.captchaToken !== "string") {
+        return json(400, { error: "challengeId and captchaToken are required" });
+      }
+      const challengeId = payload.challengeId.trim();
       const captchaToken = payload.captchaToken.trim();
-      if (captchaToken.length === 0) {
-        return json(400, { error: "captchaToken must not be empty" });
+      if (challengeId.length === 0 || captchaToken.length === 0) {
+        return json(400, { error: "challengeId and captchaToken must not be empty" });
       }
-      const inviteCode = payload.inviteCode.trim();
-      if (inviteCode.length === 0) {
-        return json(400, { error: "inviteCode must not be empty" });
+      const challenge = await ctx.runQuery(internal.auth.getChallengeForCallback, {
+        challengeId,
+      });
+      if (challenge === null) {
+        return json(404, { error: "Challenge not found" });
       }
-      const captchaResult = await verifyHcaptcha(captchaToken, getClientIp(req));
+      if (challenge.status !== "pending") {
+        return json(400, { error: "Challenge already completed" });
+      }
+      if (challenge.expiresAt < Date.now()) {
+        return json(410, { error: "Challenge expired" });
+      }
+      await ctx.runMutation(internal.auth.recordAuthAttempt, {
+        action: "login",
+        subject: challenge.agentId,
+        ip: challenge.ip,
+      });
+      const captchaResult = await verifyHcaptcha(captchaToken, challenge.ip);
       if (!captchaResult.ok) {
         return json(401, {
           error: "hCaptcha verification failed",
           errorCodes: captchaResult.errorCodes,
         });
       }
-      if (!inviteCodes.includes(inviteCode)) {
-        return json(403, { error: "Invalid invite code" });
-      }
-      const result = await ctx.runMutation(internal.auth.startLogin, {
-        agentId,
+      const result = await ctx.runMutation(internal.auth.completeCaptchaChallenge, {
+        challengeId,
       });
-      return json(200, result);
+      if (!result.ok) {
+        return json(400, { error: `Challenge failed: ${result.reason}` });
+      }
+      return json(200, { ok: true });
     } catch (error) {
       const message = errorToMessage(error);
-      if (message.includes("INVITE_CODES is not configured")) {
-        return json(500, { error: message });
-      }
       if (message.includes("HCAPTCHA_SECRET_KEY is not configured")) {
         return json(500, { error: message });
       }
@@ -289,6 +342,38 @@ http.route({
         return json(502, { error: message });
       }
       return json(400, { error: message });
+    }
+  }),
+});
+
+http.route({
+  path: "/auth/captcha-poll",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const body = await req.json();
+      const payload = body as { challengeId?: unknown };
+      if (typeof payload.challengeId !== "string") {
+        return json(400, { error: "challengeId is required" });
+      }
+      const result = await ctx.runQuery(internal.auth.pollCaptchaChallenge, {
+        challengeId: payload.challengeId.trim(),
+      });
+      if (result.status === "not_found") {
+        return json(404, { error: "Challenge not found" });
+      }
+      if (result.status === "expired") {
+        return json(410, { error: "Challenge expired" });
+      }
+      if (result.status === "completed") {
+        return json(200, {
+          status: "completed",
+          ...result.loginResult,
+        });
+      }
+      return json(202, { status: "pending" });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
     }
   }),
 });
