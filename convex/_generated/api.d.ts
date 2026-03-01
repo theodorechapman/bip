@@ -16,6 +16,7 @@ import type * as funding from "../funding.js";
 import type * as http from "../http.js";
 import type * as intents from "../intents.js";
 import type * as lib_browserUse from "../lib/browserUse.js";
+import type * as lib_captchaSolver from "../lib/captchaSolver.js";
 import type * as lib_paymentsUtils from "../lib/paymentsUtils.js";
 import type * as lib_solana from "../lib/solana.js";
 import type * as lib_taskBuilders from "../lib/taskBuilders.js";
@@ -44,6 +45,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intents: typeof intents;
   "lib/browserUse": typeof lib_browserUse;
+  "lib/captchaSolver": typeof lib_captchaSolver;
   "lib/paymentsUtils": typeof lib_paymentsUtils;
   "lib/solana": typeof lib_solana;
   "lib/taskBuilders": typeof lib_taskBuilders;

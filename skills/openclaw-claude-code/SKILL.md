@@ -9,7 +9,7 @@ tags: [agents, commerce, payments, x402, gift-cards, api-keys, automation]
 
 bip lets your agent authenticate, hold funds, and execute paid intents (gift cards, API keys, account bootstraps) via HTTP calls. no SDK, no CLI install — just curl.
 
-**base url:** `https://enduring-rooster-593.convex.site`
+**base url:** `https://wonderful-goose-918.convex.site`
 
 ---
 

@@ -126,14 +126,31 @@ export const recordAuthAttempt = internalMutation({
   },
 });
 
+const BIP_AGENT_ID_PREFIX = "bip_";
+
+function generateBipAgentId(): string {
+  const hex = randomHex(12);
+  return `${BIP_AGENT_ID_PREFIX}${hex}`;
+}
+
+function isBootstrapSentinel(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  return v === "bootstrap" || v === "__bip_bootstrap__";
+}
+
 export const startLogin = internalMutation({
   args: {
     agentId: v.string(),
   },
   handler: async (ctx, args) => {
-    const agentId = normalizeSubject(args.agentId);
-    if (agentId.length < 3) {
-      throw new Error("Invalid X-Agent-Id header");
+    let agentId = args.agentId.trim();
+    if (isBootstrapSentinel(agentId)) {
+      agentId = generateBipAgentId();
+    } else {
+      agentId = normalizeSubject(agentId);
+      if (agentId.length < 3) {
+        throw new Error("Invalid X-Agent-Id header");
+      }
     }
 
     const now = Date.now();
@@ -174,6 +191,7 @@ export const startLogin = internalMutation({
       expiresAt: Math.floor(accessExpiresAt / 1000),
       maxApiCalls: SESSION_API_CALL_LIMIT,
       remainingApiCalls: SESSION_API_CALL_LIMIT,
+      agentId: user.agentId,
     };
   },
 });

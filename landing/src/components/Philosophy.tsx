@@ -9,6 +9,9 @@ export default function Philosophy() {
   const sectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const ctx = gsap.context(() => {
       gsap.from('.phil-q1', {
         y: 60,
@@ -41,7 +44,7 @@ export default function Philosophy() {
     <section
       id="why-bip"
       ref={sectionRef}
-      className="py-16 md:py-24 px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5"
+      className="py-16 md:py-24 px-6 sm:px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5"
     >
       <div className="max-w-[960px] mx-auto">
 

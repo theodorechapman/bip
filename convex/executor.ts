@@ -35,6 +35,7 @@ import {
 import type { TreasuryCardResolved } from "./lib/treasuryCard";
 import { redactSensitiveOutput } from "./lib/treasuryCard";
 import { emitTrace } from "./observability";
+import { solveArkoseCaptcha, detectCaptchaBlock, getXArkosePublicKey } from "./lib/captchaSolver";
 
 // Internal refs to other convex modules
 const intentsRef = () => (internal as any).intents;
@@ -252,8 +253,9 @@ export const executeIntent = internalAction({
       meta = null;
     }
 
-    // ── Shopify intents: direct API execution (no browser-use) ──
-    if (intent.intentType?.startsWith("shopify_")) {
+    // ── Shopify product/order intents: direct API execution (no browser-use) ──
+    const shopifyApiIntents = ["shopify_source_products", "shopify_list_products", "shopify_fulfill_orders", "shopify_cycle"];
+    if (shopifyApiIntents.includes(intent.intentType ?? "")) {
       try {
         const { executeShopifyIntent } = await import("./shopifyExecutor");
         const shopifyResult = await executeShopifyIntent(ctx, intent, meta, runId, traceId);
@@ -534,7 +536,9 @@ export const executeIntent = internalAction({
       apiKeyMeta?.accountEmailMode === "agentmail" ||
       intent.intentType === "account_bootstrap" ||
       intent.intentType === "x_account_bootstrap" ||
-      intent.intentType === "giftcard_purchase";
+      intent.intentType === "giftcard_purchase" ||
+      intent.intentType === "cj_account_bootstrap" ||
+      intent.intentType === "shopify_store_create";
 
     if (shouldProvisionEmail) {
       try {
@@ -579,7 +583,11 @@ export const executeIntent = internalAction({
     if (agentEmail) sensitiveTokens.push(agentEmail);
     if (agentPassword) sensitiveTokens.push(agentPassword);
 
-    const requiresInbox = intent.intentType === "x_account_bootstrap" || intent.intentType === "account_bootstrap";
+    const requiresInbox =
+      intent.intentType === "x_account_bootstrap" ||
+      intent.intentType === "account_bootstrap" ||
+      intent.intentType === "cj_account_bootstrap" ||
+      intent.intentType === "shopify_store_create";
     if (requiresInbox && (agentEmail === null || agentInboxId === null)) {
       const failTs = now();
       await ctx.runMutation(intentsRef()._updateRun, {
@@ -611,6 +619,156 @@ export const executeIntent = internalAction({
         detail: "Cannot provision AgentMail inbox for email verification. Delete an existing inbox or upgrade the AgentMail plan.",
         traceId,
       };
+    }
+
+    // Snapshot existing message IDs (for verification email polling)
+    let knownMessageIds: string[] = [];
+    if (agentInboxId && shouldProvisionEmail) {
+      try {
+        knownMessageIds = await ctx.runAction(internal.agentmail.getExistingMessageIds, {
+          inboxId: agentInboxId,
+        });
+      } catch (e: any) {
+        console.error("[executeIntent] failed to snapshot message IDs:", e?.message);
+      }
+    }
+
+    // ── CJ Account Bootstrap: signup + verify + store creds per agent ──
+    if (intent.intentType === "cj_account_bootstrap" && agentEmail && agentPassword && agentInboxId) {
+      const cjSignupTask = `You are automating signup on CJ Dropshipping.
+
+STEP 1 - SIGN UP:
+1. Go to https://cjdropshipping.com/register
+2. Find the registration form
+3. Email: ${agentEmail}
+4. Password: ${agentPassword}
+5. If there's a "confirm password" field, enter the same password again
+6. Accept any terms/agreements checkbox
+7. Click the Register/Sign Up button
+
+After signup, if the site asks you to verify your email, report "VERIFICATION_NEEDED".
+If signup completes without email verification, report "SIGNUP_COMPLETE".
+If you encounter CAPTCHAs, try to solve them. If blocked, report "BLOCKED_BY_CAPTCHA".
+If you encounter issues, report "FAILED: <reason>".`;
+
+      const buResultCj = await callBrowserUseTask(cjSignupTask, undefined, {
+        maxSteps: 25,
+        timeoutMs: 180_000,
+        allowedDomains: ["*.cjdropshipping.com", "*.cjcommerce.com"],
+      });
+
+      const signupOutput = String(buResultCj.output ?? "");
+
+      if (buResultCj.ok && !signupOutput.includes("BLOCKED_BY_CAPTCHA") && !signupOutput.includes("FAILED")) {
+        let verified = signupOutput.includes("SIGNUP_COMPLETE");
+        if (!verified && (signupOutput.includes("VERIFICATION_NEEDED") || signupOutput.includes("verify"))) {
+          const pollResult = await ctx.runAction(internal.agentmail.pollForVerificationEmail, {
+            inboxId: agentInboxId,
+            knownMessageIds,
+            timeoutSeconds: 90,
+            pollIntervalSeconds: 5,
+          });
+          if (pollResult.found && (pollResult.verificationLink || pollResult.verificationCode)) {
+            const verifyTask = pollResult.verificationLink
+              ? `Navigate to this verification link and complete email verification:\n${pollResult.verificationLink}\n\nAfter verification is complete, report "VERIFIED".`
+              : `Enter this verification code on the CJ Dropshipping page: ${pollResult.verificationCode}\n\nFind the verification code input field and enter the code, then submit. After verification is complete, report "VERIFIED".`;
+            const verifyResult = await callBrowserUseTask(verifyTask, undefined, {
+              maxSteps: 15,
+              timeoutMs: 120_000,
+              sessionId: buResultCj.sessionId,
+            });
+            verified = verifyResult.ok && String(verifyResult.output ?? "").includes("VERIFIED");
+          }
+        }
+        if (verified) {
+          const credentialRef = randomId("sec");
+          await ctx.runMutation(secretsRef()._putSecret, {
+            secretRef: credentialRef,
+            userId: intent.userId,
+            intentId: intent.intentId,
+            provider: "cj",
+            secretType: "cj_account",
+            secretValue: JSON.stringify({ email: agentEmail, password: agentPassword }),
+          });
+          const doneTs = now();
+          await ctx.runMutation(intentsRef()._updateRun, {
+            runId,
+            status: "ok",
+            outputJson: JSON.stringify({ email: agentEmail, credentialRef }),
+            error: null,
+            updatedAt: doneTs,
+          });
+          if (holdAmountCents > 0) {
+            await ctx.runMutation(accountsRef()._settleHeldFundsForIntent, {
+              userId: intent.userId,
+              intentId: intent.intentId,
+              amountCents: holdAmountCents,
+              refType: "cj_bootstrap",
+              refId: runId,
+            });
+          }
+          await ctx.runMutation(intentsRef()._setIntentStatus, {
+            intentId: intent.intentId,
+            status: "confirmed",
+            updatedAt: doneTs,
+          });
+          return { runId, status: "ok", traceId, credentialRef, email: agentEmail };
+        }
+      }
+      const doneTs = now();
+      await ctx.runMutation(intentsRef()._updateRun, {
+        runId,
+        status: "failed",
+        outputJson: buResultCj.output ? JSON.stringify({ raw: String(buResultCj.output) }) : null,
+        error: buResultCj.error ?? "cj_signup_failed",
+        updatedAt: doneTs,
+      });
+      if (holdAmountCents > 0) {
+        await ctx.runMutation(accountsRef()._releaseHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "execution_failed",
+          refId: runId,
+        });
+      }
+      await ctx.runMutation(intentsRef()._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "failed",
+        updatedAt: doneTs,
+      });
+      return {
+        runId,
+        status: "failed",
+        error: buResultCj.error ?? "cj_signup_failed",
+        traceId,
+        handoffUrl: buResultCj.handoffUrl,
+      };
+    }
+
+    // ── Shopify Store Create: step-chained to stay within Convex action timeout ──
+    if (intent.intentType === "shopify_store_create" && agentEmail && agentPassword && agentInboxId) {
+      const storeName =
+        (typeof meta?.storeName === "string" && meta.storeName.trim()) || `store-${Date.now()}`;
+      const niche = (typeof meta?.niche === "string" && meta.niche.trim()) || "general";
+
+      await ctx.scheduler.runAfter(0, executorRef().shopifyStoreStep, {
+        step: "signup",
+        intentId: intent.intentId,
+        userId: intent.userId,
+        runId,
+        traceId,
+        holdAmountCents,
+        agentEmail,
+        agentPassword,
+        agentInboxId,
+        knownMessageIds,
+        storeName,
+        niche,
+        sessionId: "",
+        shopifyDomain: "",
+      });
+      return { runId, status: "executing", traceId, message: "Shopify store creation started (step: signup)" };
     }
 
     const agentCredentialInstructions =
@@ -708,18 +866,6 @@ export const executeIntent = internalAction({
       });
     }
 
-    // Snapshot existing message IDs so we only look at NEW emails after signup
-    let knownMessageIds: string[] = [];
-    if (agentInboxId && shouldProvisionEmail) {
-      try {
-        knownMessageIds = await ctx.runAction(internal.agentmail.getExistingMessageIds, {
-          inboxId: agentInboxId,
-        });
-      } catch (e: any) {
-        console.error("[executeIntent] failed to snapshot message IDs:", e?.message);
-      }
-    }
-
     // ── Determine browser-use options for X intents ──
     const isXIntent = intent.intentType === "x_account_bootstrap" || intent.intentType === "x_post";
     const xAllowedDomains = isXIntent ? ["x.com", "twitter.com"] : undefined;
@@ -754,6 +900,81 @@ export const executeIntent = internalAction({
       });
     }
     let doneTs = now();
+
+    // ── Captcha auto-solve for x_account_bootstrap ──
+    if (
+      !buResult.ok &&
+      intent.intentType === "x_account_bootstrap" &&
+      detectCaptchaBlock(buResult.error, buResult.output)
+    ) {
+      console.log("[executeIntent] captcha block detected in x_account_bootstrap, attempting 2captcha solve...");
+      const arkoseKey = getXArkosePublicKey("signup");
+      const solveResult = await solveArkoseCaptcha({
+        publicKey: arkoseKey,
+        pageUrl: "https://x.com/i/flow/signup",
+      });
+
+      // Record the solve attempt
+      try {
+        await ctx.runMutation(secretsRef()._recordEvent, {
+          intentId: intent.intentId,
+          eventType: "captcha_solve_attempted",
+          payloadJson: JSON.stringify({
+            runId,
+            traceId,
+            solveOk: solveResult.ok,
+            elapsedMs: solveResult.elapsedMs ?? null,
+            error: solveResult.error ?? null,
+          }),
+          createdAt: now(),
+        });
+      } catch {
+        console.error("[executeIntent] failed to record captcha_solve_attempted event");
+      }
+
+      if (solveResult.ok && solveResult.token && buResult.sessionId) {
+        console.log(`[executeIntent] captcha solved in ${solveResult.elapsedMs}ms, injecting token via browser-use...`);
+        const tokenInjectionTask = [
+          "A FunCaptcha/Arkose verification token has been solved externally.",
+          "You need to inject this token into the page to bypass the captcha and continue signup.",
+          "",
+          "Try these approaches in order:",
+          `1) Execute this JavaScript in the browser console: document.querySelector('[name=fc-token]').value = '${solveResult.token}';`,
+          "   Then find and click the submit/verify/next button.",
+          "2) If there is no fc-token input, look for any Arkose/FunCaptcha iframe or callback.",
+          `   Try: window.parent.postMessage(JSON.stringify({eventId:'challenge-complete',payload:{sessionToken:'${solveResult.token}'}}), '*');`,
+          "3) If none of the above work, try pasting the token into any visible verification input field.",
+          "",
+          "After the captcha is resolved, continue with the X signup flow:",
+          "- Complete any remaining signup steps",
+          "- When asked for email verification code, STOP and wait on the verification code input screen",
+          "- Report the final status",
+        ].join("\n");
+
+        const injectResult = await callBrowserUseTask(tokenInjectionTask, args.apiKey, {
+          sessionId: buResult.sessionId,
+          maxSteps: 20,
+          timeoutMs: 120_000,
+          allowedDomains: xAllowedDomains,
+          keepAlive: true,
+        });
+
+        if (injectResult.ok) {
+          console.log("[executeIntent] captcha token injection succeeded, continuing flow");
+          buResult = injectResult;
+          doneTs = now();
+        } else {
+          console.warn("[executeIntent] captcha token injection failed:", injectResult.error);
+          // Fall through to existing action_required handling
+        }
+      } else if (!solveResult.ok) {
+        console.warn("[executeIntent] 2captcha solve failed:", solveResult.error);
+        // Fall through to existing action_required handling
+      } else {
+        console.warn("[executeIntent] captcha solved but no sessionId to inject into");
+        // Fall through to existing action_required handling
+      }
+    }
 
     // ── Email verification (non-fatal) ──
     if (buResult.ok && agentInboxId && shouldProvisionEmail) {
@@ -1267,3 +1488,378 @@ export const executeIntent = internalAction({
     };
   },
 });
+
+// ── Shopify Store Create: step-chained action ──────────────────────
+// Each step runs one Browser Use task and schedules the next, staying
+// within Convex's per-action timeout (~10 min).
+
+type ShopifyStoreStepName = "signup" | "verify" | "configure" | "token_extract" | "token_create_app";
+
+const shopifyStoreStepArgs = {
+  step: v.string(),
+  intentId: v.string(),
+  userId: v.id("users"),
+  runId: v.string(),
+  traceId: v.string(),
+  holdAmountCents: v.number(),
+  agentEmail: v.string(),
+  agentPassword: v.string(),
+  agentInboxId: v.string(),
+  knownMessageIds: v.array(v.string()),
+  storeName: v.string(),
+  niche: v.string(),
+  sessionId: v.string(),
+  shopifyDomain: v.string(),
+};
+
+async function failShopifyStep(
+  ctx: any,
+  args: { intentId: string; userId: any; runId: string; holdAmountCents: number },
+  error: string,
+  outputJson?: string | null,
+) {
+  const ts = now();
+  await ctx.runMutation(intentsRef()._updateRun, {
+    runId: args.runId,
+    status: "failed",
+    outputJson: outputJson ?? null,
+    error,
+    updatedAt: ts,
+  });
+  if (args.holdAmountCents > 0) {
+    await ctx.runMutation(accountsRef()._releaseHeldFundsForIntent, {
+      userId: args.userId,
+      intentId: args.intentId,
+      amountCents: args.holdAmountCents,
+      refType: "execution_failed",
+      refId: args.runId,
+    });
+  }
+  await ctx.runMutation(intentsRef()._setIntentStatus, {
+    intentId: args.intentId,
+    status: "failed",
+    updatedAt: ts,
+  });
+}
+
+export const shopifyStoreStep = internalAction({
+  args: shopifyStoreStepArgs,
+  handler: async (ctx, args): Promise<any> => {
+    const step = args.step as ShopifyStoreStepName;
+
+    // ── STEP: signup ──
+    if (step === "signup") {
+      const signupTask = `You are automating Shopify store creation.
+
+STEP 1 - SIGN UP FOR SHOPIFY FREE TRIAL:
+1. Go to https://www.shopify.com/free-trial
+2. Click "Start free trial"
+3. If asked "What are you looking to do?", select "Start an online store"
+4. Answer onboarding questions based on the niche "${args.niche}"
+5. When asked for email, enter: ${args.agentEmail}
+6. When asked for password, enter: ${args.agentPassword}
+7. Fill in business info: country = United States, use any US address
+8. Complete the signup flow
+
+IMPORTANT:
+- Be patient with page loads. If clicking/typing fails, try Tab navigation or wait(3).
+- If you see CAPTCHAs, try to solve them. If blocked, report "BLOCKED_BY_CAPTCHA".
+- If signup asks for email verification, report "VERIFICATION_NEEDED".
+- If signup completes without verification, report "SIGNUP_COMPLETE" and the store URL.
+- If you encounter issues, report "FAILED: <reason>".`;
+
+      const buSignup = await callBrowserUseTask(signupTask, undefined, {
+        maxSteps: 35,
+        timeoutMs: 300_000,
+        allowedDomains: ["*.shopify.com", "*.myshopify.com", "*.accounts.shopify.com"],
+        keepAlive: true,
+      });
+
+      const output = String(buSignup.output ?? "");
+      if (!buSignup.ok || output.includes("BLOCKED_BY_CAPTCHA") || output.includes("FAILED")) {
+        await failShopifyStep(ctx, args, buSignup.error ?? "shopify_signup_failed", JSON.stringify({ raw: output }));
+        return;
+      }
+
+      await ctx.runMutation(secretsRef()._recordEvent, {
+        intentId: args.intentId,
+        eventType: "shopify_step_signup_done",
+        payloadJson: JSON.stringify({ output: output.slice(0, 500) }),
+        createdAt: now(),
+      });
+
+      await ctx.scheduler.runAfter(0, executorRef().shopifyStoreStep, {
+        ...args,
+        step: "verify",
+        sessionId: buSignup.sessionId ?? "",
+        shopifyDomain: (output.match(/([a-z0-9-]+\.myshopify\.com)/i) ?? [])[1] ?? "",
+      });
+      return;
+    }
+
+    // ── STEP: verify ──
+    if (step === "verify") {
+      const signupOutput = await getLastStepOutput(ctx, args.intentId, "shopify_step_signup_done");
+      const alreadyVerified = signupOutput.includes("SIGNUP_COMPLETE");
+
+      let verified = alreadyVerified;
+      if (!verified) {
+        const pollResult = await ctx.runAction(internal.agentmail.pollForVerificationEmail, {
+          inboxId: args.agentInboxId,
+          knownMessageIds: args.knownMessageIds,
+          timeoutSeconds: 120,
+          pollIntervalSeconds: 5,
+        });
+        if (pollResult.found && (pollResult.verificationLink || pollResult.verificationCode)) {
+          const verifyTask = pollResult.verificationLink
+            ? `Navigate to this verification link and complete the email verification:\n${pollResult.verificationLink}\n\nAfter clicking, wait for the page to load. Then navigate to the Shopify admin dashboard. Report the store URL (e.g. something.myshopify.com) you end up on.`
+            : `Enter this verification code on the Shopify page: ${pollResult.verificationCode}\n\nAfter verification, navigate to the admin dashboard. Report the store URL (e.g. something.myshopify.com).`;
+          const verifyResult = await callBrowserUseTask(verifyTask, undefined, {
+            maxSteps: 20,
+            timeoutMs: 120_000,
+            sessionId: args.sessionId || undefined,
+            allowedDomains: ["*.shopify.com", "*.myshopify.com", "*.accounts.shopify.com"],
+            keepAlive: true,
+          });
+          verified = verifyResult.ok;
+          const verifyOutput = String(verifyResult.output ?? "");
+          const dm = verifyOutput.match(/([a-z0-9-]+\.myshopify\.com)/i);
+          if (dm && !args.shopifyDomain) args.shopifyDomain = dm[1];
+          if (verifyResult.sessionId) args.sessionId = verifyResult.sessionId;
+        }
+      }
+
+      if (!verified) {
+        await failShopifyStep(ctx, args, "shopify_verification_failed");
+        return;
+      }
+
+      await ctx.scheduler.runAfter(0, executorRef().shopifyStoreStep, {
+        ...args,
+        step: "configure",
+      });
+      return;
+    }
+
+    // ── STEP: configure (set store name, extract domain) ──
+    if (step === "configure") {
+      const configTask = `You are in a Shopify admin dashboard. Configure the store:
+
+1. Go to Settings (gear icon) and set store name to "${args.storeName}" if not set
+2. Ensure store currency is USD
+3. Get the store URL from the browser (something.myshopify.com) or Settings > Domains
+4. Report ONLY the store domain (e.g. my-store.myshopify.com) as your final answer`;
+
+      const configResult = await callBrowserUseTask(configTask, undefined, {
+        maxSteps: 25,
+        timeoutMs: 180_000,
+        sessionId: args.sessionId || undefined,
+        allowedDomains: ["*.shopify.com", "*.myshopify.com"],
+        keepAlive: true,
+      });
+      const configOutput = String(configResult.output ?? "");
+      const dm = configOutput.match(/([a-z0-9-]+\.myshopify\.com)/i);
+      const domain = dm ? dm[1] : args.shopifyDomain;
+
+      if (!domain) {
+        await failShopifyStep(ctx, args, "shopify_domain_not_captured", JSON.stringify({ raw: configOutput }));
+        return;
+      }
+
+      await ctx.scheduler.runAfter(0, executorRef().shopifyStoreStep, {
+        ...args,
+        step: "token_extract",
+        shopifyDomain: domain,
+        sessionId: configResult.sessionId ?? args.sessionId,
+      });
+      return;
+    }
+
+    // ── STEP: token_extract ──
+    // Shopify now uses dev.shopify.com "Dev Dashboard" which requires email
+    // verification before you can create apps. We handle it in sub-steps:
+    //   1. Navigate to dev dashboard, trigger email verification
+    //   2. Poll AgentMail for the verification email
+    //   3. Complete verification and create the app + extract token
+    if (step === "token_extract") {
+      const storeSlug = args.shopifyDomain.replace(".myshopify.com", "");
+
+      // Sub-step 1: Navigate to dev dashboard and trigger email verification
+      const devDashTask = `You are automating Shopify app development setup.
+
+1. Go to https://admin.shopify.com/store/${storeSlug}/settings/apps/development
+2. If not logged in, sign in with: Email: ${args.agentEmail}  Password: ${args.agentPassword}
+3. Look for a "Develop apps" or "Create an app" button. If you see it, click it.
+4. If instead you see "Build apps in Dev Dashboard" or a link to dev.shopify.com, click it.
+5. If the Dev Dashboard (dev.shopify.com) asks you to verify your email, click the verify/send email button.
+6. After triggering the verification email, STOP and report one of:
+   - "DEV_DASHBOARD_VERIFY_NEEDED" if email verification was requested
+   - "CREATE_APP_READY" if you can already create an app (no verification needed)
+   - "TOKEN_FOUND: shpat_xxxxx" if you somehow already see an access token
+   - "FAILED: <reason>" if something went wrong
+
+IMPORTANT: Do NOT try to check email yourself. Just trigger the verification and stop.`;
+
+      const devResult = await callBrowserUseTask(devDashTask, undefined, {
+        maxSteps: 30,
+        timeoutMs: 300_000,
+        sessionId: args.sessionId || undefined,
+        allowedDomains: ["*.shopify.com", "*.myshopify.com", "*.accounts.shopify.com", "dev.shopify.com"],
+        keepAlive: true,
+      });
+
+      const devOutput = String(devResult.output ?? "");
+
+      // Check if token was found directly
+      const earlyTokenMatch = devOutput.match(/shpat_[a-zA-Z0-9_-]+/);
+      if (earlyTokenMatch) {
+        await completeTokenExtraction(ctx, args, earlyTokenMatch[0]);
+        return;
+      }
+
+      if (devOutput.includes("FAILED")) {
+        await failShopifyStep(ctx, args, "shopify_dev_dashboard_failed", JSON.stringify({ raw: devOutput.slice(0, 1000) }));
+        return;
+      }
+
+      // Sub-step 2: If verification needed, poll AgentMail and complete it
+      if (devOutput.includes("DEV_DASHBOARD_VERIFY_NEEDED") || devOutput.toLowerCase().includes("verify")) {
+        const pollResult = await ctx.runAction(internal.agentmail.pollForVerificationEmail, {
+          inboxId: args.agentInboxId,
+          knownMessageIds: args.knownMessageIds,
+          timeoutSeconds: 120,
+          pollIntervalSeconds: 5,
+        });
+
+        if (pollResult.found && (pollResult.verificationLink || pollResult.verificationCode)) {
+          const verifyDevTask = pollResult.verificationLink
+            ? `Navigate to this verification link to verify your Shopify developer email:\n${pollResult.verificationLink}\n\nAfter verification completes, report "DEV_VERIFIED".`
+            : `Enter this verification code on the Shopify Dev Dashboard page: ${pollResult.verificationCode}\n\nAfter verification completes, report "DEV_VERIFIED".`;
+
+          await callBrowserUseTask(verifyDevTask, undefined, {
+            maxSteps: 15,
+            timeoutMs: 120_000,
+            sessionId: (devResult.sessionId ?? args.sessionId) || undefined,
+            keepAlive: true,
+          });
+        }
+      }
+
+      // Sub-step 3: Now create the app and extract the token
+      // Schedule as a new action to stay within timeout
+      await ctx.scheduler.runAfter(0, executorRef().shopifyStoreStep, {
+        ...args,
+        step: "token_create_app",
+        sessionId: devResult.sessionId ?? args.sessionId,
+      });
+      return;
+    }
+
+    // ── STEP: token_create_app (create app in dev dashboard + extract token) ──
+    if (step === "token_create_app") {
+      const storeSlug = args.shopifyDomain.replace(".myshopify.com", "");
+
+      const createAppTask = `You are on the Shopify Dev Dashboard or admin. Create a custom app and extract the Admin API access token.
+
+Try these approaches in order:
+
+APPROACH 1 - Dev Dashboard (dev.shopify.com):
+1. Go to https://dev.shopify.com or the Dev Dashboard link from Shopify admin
+2. Look for "Apps" or "Create an app" 
+3. Create an app named "bip-agent"
+4. Connect it to the store "${args.shopifyDomain}"
+5. Under API access / credentials, configure Admin API scopes (select all)
+6. Install the app on the store
+7. Find and reveal the Admin API access token (starts with shpat_)
+
+APPROACH 2 - Admin Settings (legacy):
+1. Go to https://admin.shopify.com/store/${storeSlug}/settings/apps/development
+2. If you see "Create an app" button, click it
+3. Name the app "bip-agent"
+4. Go to Configuration > Admin API integration > Configure
+5. Select ALL access scopes, Save
+6. Click "Install app" and confirm
+7. Click "Reveal token once" to see the token (starts with shpat_)
+
+APPROACH 3 - Direct URL:
+1. Go to https://admin.shopify.com/store/${storeSlug}/settings/apps/development/create
+2. Follow the app creation flow
+
+If asked to log in, use: Email: ${args.agentEmail}  Password: ${args.agentPassword}
+
+Return ONLY the full access token string (starts with shpat_) as your final answer.
+If you cannot get the token, report "FAILED: <specific reason>".
+
+IMPORTANT: The token is shown only once. Copy it before navigating away.`;
+
+      const tokenResult = await callBrowserUseTask(createAppTask, undefined, {
+        maxSteps: 50,
+        timeoutMs: 480_000,
+        sessionId: args.sessionId || undefined,
+        allowedDomains: ["*.shopify.com", "*.myshopify.com", "*.accounts.shopify.com", "dev.shopify.com"],
+      });
+
+      const tokenOutput = String(tokenResult.output ?? "");
+      const tokenMatch = tokenOutput.match(/shpat_[a-zA-Z0-9_-]+/);
+      const accessToken = tokenMatch ? tokenMatch[0] : null;
+
+      if (!accessToken) {
+        await failShopifyStep(ctx, args, "shopify_token_extraction_failed", JSON.stringify({ domain: args.shopifyDomain, raw: tokenOutput.slice(0, 1000) }));
+        return;
+      }
+
+      await completeTokenExtraction(ctx, args, accessToken);
+      return;
+    }
+  },
+});
+
+async function completeTokenExtraction(
+  ctx: any,
+  args: { intentId: string; userId: any; runId: string; holdAmountCents: number; shopifyDomain: string },
+  accessToken: string,
+) {
+  const credentialRef = randomId("sec");
+  await ctx.runMutation(secretsRef()._putSecret, {
+    secretRef: credentialRef,
+    userId: args.userId,
+    intentId: args.intentId,
+    provider: "shopify",
+    secretType: "shopify_store",
+    secretValue: JSON.stringify({ domain: args.shopifyDomain, accessToken }),
+  });
+  const ts = now();
+  await ctx.runMutation(intentsRef()._updateRun, {
+    runId: args.runId,
+    status: "ok",
+    outputJson: JSON.stringify({ domain: args.shopifyDomain, credentialRef }),
+    error: null,
+    updatedAt: ts,
+  });
+  if (args.holdAmountCents > 0) {
+    await ctx.runMutation(accountsRef()._settleHeldFundsForIntent, {
+      userId: args.userId,
+      intentId: args.intentId,
+      amountCents: args.holdAmountCents,
+      refType: "shopify_store_create",
+      refId: args.runId,
+    });
+  }
+  await ctx.runMutation(intentsRef()._setIntentStatus, {
+    intentId: args.intentId,
+    status: "confirmed",
+    updatedAt: ts,
+  });
+}
+
+async function getLastStepOutput(ctx: any, intentId: string, eventType: string): Promise<string> {
+  const events = await ctx.runQuery(intentsRef().getIntentEvents, { intentId });
+  const match = events?.find((e: any) => e.eventType === eventType);
+  if (!match?.payloadJson) return "";
+  try {
+    const parsed = JSON.parse(match.payloadJson);
+    return typeof parsed.output === "string" ? parsed.output : "";
+  } catch {
+    return "";
+  }
+}

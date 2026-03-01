@@ -32,32 +32,25 @@ This starts local Convex and writes `.env.local` including:
 - `CONVEX_URL`
 - `CONVEX_SITE_URL`
 
-## CLI usage
+## Agent onboarding
 
-Public install (no repo clone required):
-
-```bash
-curl -fsSL https://exciting-stingray-685.convex.site/cli/install.sh | sh
-```
-
-Then use the installed `bip` command:
+Agents talk HTTP — no CLI install needed. Read the skill manifest to discover available intents:
 
 ```bash
-bip config:set-base-url --url https://exciting-stingray-685.convex.site
-bip consent accept
-bip login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
-bip user retrieve
-bip create_agentmail --email openclaw-demo@yourdomain.com
-bip delete_agentmail --inbox-id openclaw-demo@yourdomain.com
+curl -fsSL https://exciting-stingray-685.convex.site/skill.md
 ```
 
-Manifest endpoint:
+Authenticate and start making requests:
 
 ```bash
-curl -fsSL https://exciting-stingray-685.convex.site/cli/manifest.json
+TOKEN=$(curl -s -X POST "https://exciting-stingray-685.convex.site/auth/login" \
+  -H "content-type: application/json" \
+  -H "x-agent-id: agent-$(date +%s)" \
+  -d '{"inviteCode":"<invite-code>","captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"}' \
+  | jq -r '.accessToken')
 ```
 
-The public CLI sends `X-Agent-Id` from local consent metadata and receives a session token valid for 24 hours.
+Session tokens are valid for 24 hours.
 
 ### Invite code setup
 

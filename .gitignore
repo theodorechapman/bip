@@ -1,15 +1,11 @@
 # dependencies
 node_modules
 
-# output / build
+# output
 out
 dist
 build
 *.tgz
-
-# lockfiles
-bun.lock
-*.lockb
 
 # code coverage
 coverage
@@ -18,8 +14,9 @@ coverage
 # logs
 logs
 *.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-# dotenv
+# dotenv environment variable files
 .env
 .env.*
 !.env.example
@@ -29,25 +26,29 @@ logs
 .cache
 *.tsbuildinfo
 
-# IDEs
+# IDEs and editors
 .idea
 .vscode
 .cursor
 
-# OS
+# Finder (MacOS) folder config
 .DS_Store
 Thumbs.db
+
+# Convex
+.convex
+
+# Shopify config (contains API credentials)
+shopify/config/x-account.json
+
+# Bun
+*.lockb
+
+# TypeScript
+*.tsbuildinfo
+
+# OS files
 *.swp
 *.swo
 *~
-
-# Convex generated
-.convex
-
-# Shopify runtime data
-shopify/config/store.json
-shopify/config/products.json
-shopify/config/memory.json
-
-# Test artifacts
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+.vercel

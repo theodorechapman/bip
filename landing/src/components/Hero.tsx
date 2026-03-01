@@ -6,6 +6,9 @@ export default function Hero() {
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const ctx = gsap.context(() => {
       gsap.from('.hero-line', {
         y: 32,
@@ -20,7 +23,7 @@ export default function Hero() {
   }, []);
 
   return (
-    <section className="relative h-[100dvh] overflow-hidden bg-[#07080A]">
+    <section id="hero" className="relative h-[100dvh] overflow-hidden bg-[#07080A]">
       {/* Shader background */}
       <div className="absolute inset-0">
         <ShaderCanvas className="w-full h-full" />
@@ -38,7 +41,7 @@ export default function Hero() {
       </div>
 
       {/* Centered content */}
-      <div ref={contentRef} className="relative z-10 h-full flex flex-col items-center justify-center px-8 text-center">
+      <div ref={contentRef} className="relative z-10 h-full flex flex-col items-center justify-center px-6 sm:px-8 text-center">
 
         {/* Status indicator */}
         <p className="hero-line font-pixel text-sm text-white/40 tracking-[0.3em] mb-12 flex items-center gap-3">
@@ -76,10 +79,10 @@ export default function Hero() {
             Start provisioning
           </a>
           <a
-            href="#protocol"
+            href="#payments"
             className="btn-magnetic px-7 py-3 border border-white/15 text-white/55 rounded-full font-sans font-medium text-sm hover:border-white/30 hover:text-white/75 transition-all duration-300"
           >
-            Read the protocol →
+            How it works →
           </a>
         </div>
 

@@ -7,16 +7,16 @@ gsap.registerPlugin(ScrollTrigger);
 /* ─── System log feed ────────────────────────────────────────────────────── */
 function SystemFeed() {
   const events = [
-    { msg: 'authenticating agent_id=my-agent-01', col: '#05D96A' },
-    { msg: 'consent scope=auth,captcha verified', col: '#05D96A' },
-    { msg: 'session issued target=stripe.com ttl=86400s', col: '#00D9AA' },
-    { msg: 'captcha solved provider=hcaptcha t=340ms', col: '#05D96A' },
-    { msg: 'x402 payment $0.50 USDC → api.service.xyz', col: '#00D9AA' },
-    { msg: 'checkout fill visa ···4242 → shop.example.com', col: '#05D96A' },
-    { msg: 'session refreshed target=github.com', col: '#00D9AA' },
-    { msg: 'agentmail inbox=agent-01@bip.sh ready', col: '#05D96A' },
-    { msg: 'quota check captcha=24/50 login=8/20', col: '#00D9AA' },
-    { msg: 'agent_id=my-agent-01 status=authorized', col: '#05D96A' },
+    { msg: 'authenticating agent_id=a7f3...c12e', col: '#05D96A' },
+    { msg: 'consent accepted tosVersion=1.2-demo', col: '#05D96A' },
+    { msg: 'login ok · ttl=86400s · remaining=100', col: '#00D9AA' },
+    { msg: 'captcha verified provider=hcaptcha t=340ms', col: '#05D96A' },
+    { msg: 'intent created type=api_key_purchase budget=$5', col: '#00D9AA' },
+    { msg: 'browser-use task started · openrouter.ai', col: '#05D96A' },
+    { msg: 'agentmail inbox provisioned agent@bip.sh', col: '#00D9AA' },
+    { msg: 'api key captured · secretRef=ref_k8...a1', col: '#05D96A' },
+    { msg: 'funding_sync · +500000 lamports credited', col: '#00D9AA' },
+    { msg: 'intent settled · $4.80 spent · $0.20 refunded', col: '#05D96A' },
   ];
 
   const [idx, setIdx] = useState(0);
@@ -25,6 +25,13 @@ function SystemFeed() {
   const [log, setLog] = useState<typeof events>([]);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) {
+      setTyped(events[idx].msg);
+      setLog((prev) => (prev.length ? prev : [events[idx]]));
+      return;
+    }
+
     const msg = events[idx].msg;
     let i = 0;
     setTyped('');
@@ -37,13 +44,16 @@ function SystemFeed() {
         setTimeout(() => {
           setLog(p => [...p.slice(-6), events[idx]]);
           setIdx(p => (p + 1) % events.length);
-        }, 900);
+        }, 1000);
       }
     }, 22);
     return () => clearInterval(t);
   }, [idx]);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const b = setInterval(() => setCursor(c => !c), 530);
     return () => clearInterval(b);
   }, []);
@@ -103,6 +113,9 @@ function QuotaMeter() {
   const [counts, setCounts] = useState({ captcha: 24, login: 8, consent: 3, session: 12 });
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => {
       setCounts(p => ({
         captcha: Math.min(50, p.captcha + (Math.random() > 0.7 ? 1 : 0)),
@@ -154,6 +167,9 @@ function SessionDisplay() {
   const [blink, setBlink] = useState(true);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => setBlink(b => !b), 1400);
     return () => clearInterval(id);
   }, []);
@@ -198,20 +214,23 @@ function SessionDisplay() {
 
 /* ─── x402 mini flow ──────────────────────────────────────────────────────── */
 function X402Mini() {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(1);
 
   const steps = [
     { from: 'Agent', to: 'Endpoint', msg: 'GET /api/resource', col: '#FFFFFF', opacity: 0.4 },
     { from: 'Endpoint', to: 'Agent', msg: '402 Payment Required', col: '#05D96A', opacity: 0.9 },
-    { from: 'Agent', to: 'BIP', msg: 'bip pay --x402', col: '#00D9AA', opacity: 0.9 },
+    { from: 'Agent', to: 'BIP', msg: 'intent_create --rail x402', col: '#00D9AA', opacity: 0.9 },
     { from: 'BIP', to: 'Endpoint', msg: '$0.50 USDC', col: '#05D96A', opacity: 0.9 },
     { from: 'Endpoint', to: 'Agent', msg: '200 OK', col: '#FFFFFF', opacity: 0.55 },
   ];
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => {
       setStep(p => (p + 1) % (steps.length + 2));
-    }, 1100);
+    }, 1400);
     return () => clearInterval(id);
   }, []);
 
@@ -252,12 +271,15 @@ function CheckoutMini() {
     { label: 'Zip', value: '94105', col: '#00D9AA' },
   ];
 
-  const [filled, setFilled] = useState(0);
+  const [filled, setFilled] = useState(1);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => {
       setFilled(p => (p >= fields.length ? 0 : p + 1));
-    }, 900);
+    }, 1400);
     return () => clearInterval(id);
   }, []);
 
@@ -333,6 +355,9 @@ export default function Features() {
   const sectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const ctx = gsap.context(() => {
       gsap.from('.bento-cell', {
         y: 30,
@@ -349,7 +374,7 @@ export default function Features() {
   const cellCls = 'bento-cell border border-white/6 rounded-3xl p-6 bg-white/[0.015] hover:border-white/10 transition-colors duration-300 overflow-hidden';
 
   return (
-    <section id="features" ref={sectionRef} className="py-16 md:py-24 px-8 md:px-16 lg:px-24 bg-[#0A0B0D]">
+    <section id="features" ref={sectionRef} className="py-16 md:py-24 px-6 sm:px-8 md:px-16 lg:px-24 bg-[#0A0B0D]">
       <div className="max-w-[1100px] mx-auto">
 
         <div className="mb-8">

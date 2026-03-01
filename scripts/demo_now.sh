@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="${BASE:-https://enduring-rooster-593.convex.site}"
+BASE="${BASE:-https://wonderful-goose-918.convex.site}"
 AGENT_ID="${AGENT_ID:-demo-$(date +%s)}"
 INVITE_CODE="${INVITE_CODE:-opalbip2026}"
 CAPTCHA_TOKEN="${CAPTCHA_TOKEN:-10000000-aaaa-bbbb-cccc-000000000001}"

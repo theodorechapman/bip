@@ -1,51 +1,98 @@
 /**
  * Product Sourcer Agent
- * Uses BrowserUse to find winning dropshipping products from suppliers.
- * Scrapes AliExpress, CJ Dropshipping, or Spocket for:
- * - Products matching the niche
- * - Prices, shipping times, ratings
- * - Product images and descriptions
- * Saves results to config/products.json
+ * Real CJ Dropshipping API integration for finding winning products.
+ * Searches, scores, and filters products by margin potential and shipping time.
+ * Saves results to config/products.json.
  */
 
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  searchProducts as cjSearch,
+  scoreProduct,
+  getShippingEstimate,
+} from "../../scenarios/sourcing/cj-client";
+import type {
+  SourcedProduct,
+  SourcingQuery,
+} from "../../scenarios/sourcing/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PRODUCTS_PATH = join(__dirname, "..", "config", "products.json");
+const CONFIG_DIR = join(__dirname, "..", "config");
+const PRODUCTS_PATH = join(CONFIG_DIR, "products.json");
 
-export type SourcedProduct = {
-  title: string;
-  supplierUrl: string;
-  supplierPrice: number;
-  shippingTime: string;
-  rating: number;
-  imageUrls: string[];
-  supplier: string;
-  sourcedAt: string;
-};
+export type { SourcedProduct };
 
-export async function sourceProducts(
-  niche: string,
-  supplier: string,
-  limit: number,
-) {
-  console.log(`\n🔍 Sourcing products for niche: "${niche}"`);
-  console.log(`   Supplier: ${supplier}`);
-  console.log(`   Max products: ${limit}\n`);
+/**
+ * Source products from CJ Dropshipping.
+ * Searches by keywords, scores and ranks results, filters out bad candidates.
+ */
+export async function sourceProducts(input?: {
+  keywords?: string[];
+  category?: string;
+  maxResults?: number;
+  maxPriceUsd?: number;
+  minMarginPct?: number;
+  maxShippingDays?: number;
+}): Promise<SourcedProduct[]> {
+  const keywords = input?.keywords ?? ["trending", "gadget"];
+  const maxResults = input?.maxResults ?? 10;
+  const minMarginPct = input?.minMarginPct ?? 40;
+  const maxShippingDays = input?.maxShippingDays ?? 20;
+  const maxPriceUsd = input?.maxPriceUsd;
 
-  // TODO: BrowserUse agent should:
-  // 1. Navigate to supplier site (aliexpress.com, cjdropshipping.com, etc.)
-  // 2. Search for niche keywords
-  // 3. Sort by orders/rating
-  // 4. Scrape top N product details
-  // 5. Extract: title, price, shipping, images, ratings
-  // 6. Save structured data
+  console.log(`[sourcer] searching CJ for: ${keywords.join(", ")}`);
 
-  const products: SourcedProduct[] = [];
+  const query: SourcingQuery = {
+    keywords,
+    category: input?.category,
+    maxPriceUsd,
+    minMarginPct,
+  };
 
+  // search CJ API
+  const rawProducts = await cjSearch(query);
+  console.log(`[sourcer] found ${rawProducts.length} raw products`);
+
+  // score and filter
+  const scored = rawProducts
+    .map((p) => ({ product: p, score: scoreProduct(p, minMarginPct) }))
+    .filter(({ product }) => {
+      // filter out products with shipping too slow
+      if (product.shippingEstimateDays > maxShippingDays) return false;
+      // filter out products with no images
+      if (product.images.length === 0) return false;
+      // filter out products with $0 price (data quality issue)
+      if (product.supplierPrice <= 0) return false;
+      return true;
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults);
+
+  const products = scored.map((s) => s.product);
+
+  console.log(
+    `[sourcer] ${products.length} products passed filters (top scores: ${scored.slice(0, 3).map((s) => s.score).join(", ")})`,
+  );
+
+  // try to get shipping estimates for top products (best effort)
+  for (const product of products.slice(0, 5)) {
+    try {
+      const estimate = await getShippingEstimate({
+        productId: product.supplierId,
+        destinationCountry: "US",
+      });
+      product.shippingEstimateDays = estimate.shippingDays;
+    } catch {
+      // keep the default estimate from search results
+    }
+  }
+
+  // save to config
+  mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(PRODUCTS_PATH, JSON.stringify(products, null, 2));
-  console.log(`   Saved ${products.length} products to ${PRODUCTS_PATH}`);
-  console.log("   ⚠️  BrowserUse agent integration pending\n");
+  console.log(`[sourcer] saved ${products.length} products to ${PRODUCTS_PATH}`);
+
+  return products;
 }

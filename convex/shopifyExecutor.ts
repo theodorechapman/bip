@@ -65,17 +65,15 @@ type ShopifyExecutorResult = {
 
 const CJ_API_BASE = "https://developers.cjdropshipping.com/api2.0/v1";
 
-let cachedCJToken: { token: string; expiresAt: number } | null = null;
+type CJCreds = { email: string; password: string };
+type ShopifyCreds = { domain: string; accessToken: string };
+type ShopifyExecutorCreds = { cj?: CJCreds | null; shopify?: ShopifyCreds | null };
 
-async function getCJToken(): Promise<string> {
-  if (cachedCJToken && Date.now() < cachedCJToken.expiresAt) {
-    return cachedCJToken.token;
-  }
-
-  const email = (process.env.CJ_EMAIL ?? "").trim();
-  const password = (process.env.CJ_PASSWORD ?? "").trim();
+async function getCJToken(creds?: CJCreds | null): Promise<string> {
+  const email = (creds?.email ?? process.env.CJ_EMAIL ?? "").trim();
+  const password = (creds?.password ?? process.env.CJ_PASSWORD ?? "").trim();
   if (!email || !password) {
-    throw new Error("CJ_EMAIL and CJ_PASSWORD must be configured");
+    throw new Error("CJ credentials required: run cj_account_bootstrap intent or set CJ_EMAIL/CJ_PASSWORD");
   }
 
   const res = await fetch(`${CJ_API_BASE}/authentication/getAccessToken`, {
@@ -93,44 +91,41 @@ async function getCJToken(): Promise<string> {
     throw new Error(`CJ auth failed: ${json?.message ?? "no token returned"}`);
   }
 
-  const token = json.data.accessToken as string;
-  // cache for 14 days (CJ tokens last ~30 days)
-  cachedCJToken = { token, expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000 };
-  return token;
+  return json.data.accessToken as string;
 }
 
 async function cjFetch(
   endpoint: string,
-  options: { method?: string; body?: unknown; params?: Record<string, string> } = {},
+  options: { method?: string; body?: unknown; params?: Record<string, string>; cjCreds?: CJCreds | null } = {},
 ): Promise<any> {
   const maxRetries = 3;
   let lastError: Error | null = null;
+  const { cjCreds, ...opts } = options;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const token = await getCJToken();
+    const token = await getCJToken(cjCreds);
 
     let url = `${CJ_API_BASE}${endpoint}`;
-    if (options.params) {
-      const qs = new URLSearchParams(options.params).toString();
+    if (opts.params) {
+      const qs = new URLSearchParams(opts.params).toString();
       url += `?${qs}`;
     }
 
     const fetchOpts: RequestInit = {
-      method: options.method ?? "GET",
+      method: opts.method ?? "GET",
       headers: {
         "Content-Type": "application/json",
         "CJ-Access-Token": token,
       },
     };
-    if (options.body) {
-      fetchOpts.body = JSON.stringify(options.body);
+    if (opts.body) {
+      fetchOpts.body = JSON.stringify(opts.body);
     }
 
     const res = await fetch(url, fetchOpts);
 
-    // re-auth on 401
+    // re-auth on 401 (token expired or invalid)
     if (res.status === 401 && attempt < maxRetries - 1) {
-      cachedCJToken = null;
       continue;
     }
 
@@ -149,6 +144,7 @@ async function cjFetch(
     if (json?.result === false) {
       lastError = new Error(`CJ API error: ${json?.message ?? "unknown"}`);
       if (attempt < maxRetries - 1) continue;
+      throw lastError;
     }
 
     return json;
@@ -159,39 +155,40 @@ async function cjFetch(
 
 // ─── Shopify Admin API Client ───────────────────────────────────────
 
-function getShopifyConfig(): { domain: string; token: string; apiVersion: string } {
-  const domain = (process.env.SHOPIFY_SHOP_DOMAIN ?? "").trim();
-  const token = (process.env.SHOPIFY_ACCESS_TOKEN ?? "").trim();
+function getShopifyConfig(overrides?: ShopifyCreds | null): { domain: string; token: string; apiVersion: string } {
+  const domain = (overrides?.domain ?? process.env.SHOPIFY_SHOP_DOMAIN ?? "").trim();
+  const token = (overrides?.accessToken ?? process.env.SHOPIFY_ACCESS_TOKEN ?? "").trim();
   if (!domain || !token) {
-    throw new Error("SHOPIFY_SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN must be configured");
+    throw new Error("Shopify config required: run shopify_store_create intent or set SHOPIFY_SHOP_DOMAIN/SHOPIFY_ACCESS_TOKEN");
   }
-  return { domain, token, apiVersion: "2024-01" };
+  return { domain, token, apiVersion: "2025-01" };
 }
 
 async function shopifyAdminFetch(
   endpoint: string,
-  options: { method?: string; body?: unknown; params?: Record<string, string> } = {},
+  options: { method?: string; body?: unknown; params?: Record<string, string>; shopifyCreds?: ShopifyCreds | null } = {},
 ): Promise<any> {
-  const config = getShopifyConfig();
+  const { shopifyCreds, ...opts } = options;
+  const config = getShopifyConfig(shopifyCreds);
   const maxRetries = 4;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let url = `https://${config.domain}/admin/api/${config.apiVersion}${endpoint}`;
-    if (options.params) {
-      const qs = new URLSearchParams(options.params).toString();
+    if (opts.params) {
+      const qs = new URLSearchParams(opts.params).toString();
       url += `?${qs}`;
     }
 
     const fetchOpts: RequestInit = {
-      method: options.method ?? "GET",
+      method: opts.method ?? "GET",
       headers: {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": config.token,
       },
     };
-    if (options.body) {
-      fetchOpts.body = JSON.stringify(options.body);
+    if (opts.body) {
+      fetchOpts.body = JSON.stringify(opts.body);
     }
 
     const res = await fetch(url, fetchOpts);
@@ -506,6 +503,7 @@ async function executeShopifySourceProducts(
   ctx: any,
   userId: Id<"users">,
   meta: ShopifySourceMeta,
+  creds: ShopifyExecutorCreds,
 ): Promise<ShopifyExecutorResult> {
   const keywords = meta.keywords ?? ["trending", "gadget"];
   const maxResults = meta.maxResults ?? 10;
@@ -515,6 +513,7 @@ async function executeShopifySourceProducts(
 
   // search CJ API
   const searchResult = await cjFetch("/product/list", {
+    cjCreds: creds.cj,
     params: {
       productNameEn: keywords.join(" "),
       pageNum: "1",
@@ -642,6 +641,7 @@ async function executeShopifyListProducts(
   ctx: any,
   userId: Id<"users">,
   meta: ShopifyListMeta,
+  creds: ShopifyExecutorCreds,
 ): Promise<ShopifyExecutorResult> {
   const marginPct = meta.marginPct ?? 50;
   const dryRun = meta.dryRun ?? false;
@@ -693,6 +693,7 @@ async function executeShopifyListProducts(
       const shopifyImages = images.map((src) => ({ src }));
 
       const createResult = await shopifyAdminFetch("/products.json", {
+        shopifyCreds: creds.shopify,
         method: "POST",
         body: {
           product: {
@@ -744,6 +745,7 @@ async function executeShopifyFulfillOrders(
   ctx: any,
   userId: Id<"users">,
   meta: ShopifyFulfillMeta,
+  creds: ShopifyExecutorCreds,
 ): Promise<ShopifyExecutorResult> {
   const dryRun = meta.dryRun ?? false;
 
@@ -751,6 +753,7 @@ async function executeShopifyFulfillOrders(
 
   // get unfulfilled orders from Shopify
   const ordersResult = await shopifyAdminFetch("/orders.json", {
+    shopifyCreds: creds.shopify,
     params: {
       status: "open",
       fulfillment_status: "unfulfilled",
@@ -802,6 +805,7 @@ async function executeShopifyFulfillOrders(
           // place order on CJ
           const addr = order.shipping_address;
           const cjOrderResult = await cjFetch("/shopping/order/createOrder", {
+            cjCreds: creds.cj,
             method: "POST",
             body: {
               orderNumber: `SHOPIFY-${order.id}-${item.id}`,
@@ -837,12 +841,15 @@ async function executeShopifyFulfillOrders(
       let shopifyFulfillmentId: number | null = null;
       try {
         // get fulfillment orders
-        const foResult = await shopifyAdminFetch(`/orders/${order.id}/fulfillment_orders.json`);
+        const foResult = await shopifyAdminFetch(`/orders/${order.id}/fulfillment_orders.json`, {
+          shopifyCreds: creds.shopify,
+        });
         const fulfillmentOrders = (foResult?.fulfillment_orders ?? []) as any[];
         const openFO = fulfillmentOrders.find((fo: any) => fo.status === "open");
 
         if (openFO) {
           const fulfillResult = await shopifyAdminFetch("/fulfillments.json", {
+            shopifyCreds: creds.shopify,
             method: "POST",
             body: {
               fulfillment: {
@@ -899,6 +906,7 @@ async function executeShopifyCycle(
   ctx: any,
   userId: Id<"users">,
   meta: ShopifyCycleMeta,
+  creds: ShopifyExecutorCreds,
 ): Promise<ShopifyExecutorResult> {
   const dryRun = meta.dryRun ?? false;
   const results: Record<string, unknown> = { dryRun };
@@ -908,7 +916,7 @@ async function executeShopifyCycle(
     const sourceResult = await executeShopifySourceProducts(ctx, userId, {
       keywords: meta.keywords ?? ["trending", "gadget"],
       maxResults: meta.maxProducts ?? 10,
-    });
+    }, creds);
     results.sourcing = sourceResult.data;
     if (!sourceResult.ok) {
       return { ok: false, error: sourceResult.error, data: results };
@@ -920,7 +928,7 @@ async function executeShopifyCycle(
     const listResult = await executeShopifyListProducts(ctx, userId, {
       marginPct: meta.marginPct ?? 50,
       dryRun,
-    });
+    }, creds);
     results.listing = listResult.data;
     if (!listResult.ok) {
       return { ok: false, error: listResult.error, data: results };
@@ -929,7 +937,7 @@ async function executeShopifyCycle(
 
   // stage 3: fulfill
   if (!meta.skipFulfillment) {
-    const fulfillResult = await executeShopifyFulfillOrders(ctx, userId, { dryRun });
+    const fulfillResult = await executeShopifyFulfillOrders(ctx, userId, { dryRun }, creds);
     results.fulfillment = fulfillResult.data;
     if (!fulfillResult.ok) {
       return { ok: false, error: fulfillResult.error, data: results };
@@ -951,6 +959,12 @@ export async function executeShopifyIntent(
   const userId = intent.userId;
   const intentType = intent.intentType ?? "";
 
+  const secretsRef = (internal as any).secrets;
+  const cjCreds = await ctx.runQuery(secretsRef._getCJCredentialsForUser, { userId });
+  const shopifyCreds = await ctx.runQuery(secretsRef._getShopifyConfigForUser, { userId });
+
+  const creds: ShopifyExecutorCreds = { cj: cjCreds ?? undefined, shopify: shopifyCreds ?? undefined };
+
   try {
     switch (intentType) {
       case "shopify_source_products":
@@ -959,18 +973,18 @@ export async function executeShopifyIntent(
           category: typeof meta?.category === "string" ? meta.category : undefined,
           maxResults: typeof meta?.maxResults === "number" ? meta.maxResults : 10,
           maxPriceUsd: typeof meta?.maxPriceUsd === "number" ? meta.maxPriceUsd : undefined,
-        });
+        }, creds);
 
       case "shopify_list_products":
         return await executeShopifyListProducts(ctx, userId, {
           marginPct: typeof meta?.marginPct === "number" ? meta.marginPct : 50,
           dryRun: meta?.dryRun === true,
-        });
+        }, creds);
 
       case "shopify_fulfill_orders":
         return await executeShopifyFulfillOrders(ctx, userId, {
           dryRun: meta?.dryRun === true,
-        });
+        }, creds);
 
       case "shopify_cycle":
         return await executeShopifyCycle(ctx, userId, {
@@ -981,7 +995,7 @@ export async function executeShopifyIntent(
           skipListing: meta?.skipListing === true,
           skipFulfillment: meta?.skipFulfillment === true,
           dryRun: meta?.dryRun === true,
-        });
+        }, creds);
 
       default:
         return { ok: false, error: `unknown shopify intent type: ${intentType}` };

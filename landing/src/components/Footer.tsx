@@ -1,33 +1,51 @@
 import React from 'react';
-
-function BipLogo({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 8 108 48"
-      fill="none"
-      aria-label="bip"
-      className={className}
-    >
-      <text
-        x="0"
-        y="48"
-        fontFamily="Helvetica, Arial, sans-serif"
-        fontWeight="800"
-        fontSize="52"
-        letterSpacing="-4"
-        fill="currentColor"
-      >bip</text>
-    </svg>
-  );
-}
+import { Link } from 'react-router-dom';
+import BipLogo from './BipLogo';
 
 const LINKS = {
-  Product:    ['Overview', 'Primitives', 'Auth Flows', 'Changelog'],
-  Developers: ['Docs', 'API Reference', 'CLI Reference', 'GitHub'],
-  Company:    ['About', 'Blog', 'Careers'],
-  Legal:      ['Privacy', 'Terms', 'Security'],
+  Product: [
+    { label: 'Overview', href: '#hero' },
+    { label: 'Primitives', href: '#features' },
+    { label: 'Payments', href: '#payments' },
+  ],
+  Developers: [
+    { label: 'Docs', href: '/docs' },
+    { label: 'API Reference', href: '/docs/api' },
+    { label: 'CLI Reference', href: '/docs/cli' },
+    { label: 'GitHub', href: 'https://github.com/theodorechapman/bip' },
+  ],
+  Company: [
+    { label: 'About', href: '/about' },
+    { label: 'Blog', href: '/blog' },
+    { label: 'Careers', href: '/careers' },
+  ],
+  Legal: [
+    { label: 'Privacy', href: '/privacy' },
+    { label: 'Terms', href: '/terms' },
+    { label: 'Security', href: '/security' },
+  ],
 };
+
+function FooterLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const className = "font-sans text-sm text-white/30 hover:text-white/60 transition-colors duration-200";
+
+  // External links
+  if (href.startsWith('http')) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" className={className}>
+        {children}
+      </a>
+    );
+  }
+
+  // Hash links (anchor on same page)
+  if (href.startsWith('#')) {
+    return <a href={href} className={className}>{children}</a>;
+  }
+
+  // Internal routes
+  return <Link to={href} className={className}>{children}</Link>;
+}
 
 export default function Footer() {
   return (
@@ -35,7 +53,7 @@ export default function Footer() {
       {/* Top glow — phosphor green */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1/2 h-px bg-gradient-to-r from-transparent via-[#05D96A]/20 to-transparent" />
 
-      <div className="relative z-10 max-w-[960px] mx-auto px-8 md:px-16 pt-20 pb-12">
+      <div className="relative z-10 max-w-[960px] mx-auto px-6 sm:px-8 md:px-16 pt-20 pb-12">
 
         {/* Top row */}
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-12 mb-16 pb-16 border-b border-white/5">
@@ -43,7 +61,7 @@ export default function Footer() {
             <div className="flex items-center gap-3 mb-5">
               <BipLogo className="h-8 w-auto text-white" />
               <span className="font-mono text-xs text-white/25 border border-white/8 rounded-full px-2.5 py-1">
-                v0.2.1-alpha
+                v0.1.0
               </span>
             </div>
             <p className="font-sans text-white/30 font-light leading-snug max-w-[260px]"
@@ -53,12 +71,18 @@ export default function Footer() {
           </div>
 
           <div className="flex flex-col gap-3">
-            <button className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#040506] rounded-full font-bold text-sm whitespace-nowrap">
+            <a
+              href="/#waitlist"
+              className="btn-magnetic btn-slide px-7 py-3 bg-white text-[#040506] rounded-full font-bold text-sm whitespace-nowrap inline-block"
+            >
               Start provisioning →
-            </button>
-            <button className="btn-magnetic px-7 py-3 border border-white/8 text-white/30 rounded-full font-medium text-sm hover:border-white/15 hover:text-white/50 transition-all duration-300">
+            </a>
+            <Link
+              to="/docs"
+              className="btn-magnetic px-7 py-3 border border-white/8 text-white/30 rounded-full font-medium text-sm hover:border-white/15 hover:text-white/50 transition-all duration-300 inline-block"
+            >
               Read the docs
-            </button>
+            </Link>
           </div>
         </div>
 
@@ -68,7 +92,7 @@ export default function Footer() {
             Ecosystem
           </p>
           <div className="flex flex-wrap gap-2">
-            {['AgentMail', 'hCaptcha', 'Coinbase CDP', 'Convex', 'Anthropic', 'Browser Use'].map((s) => (
+            {['AgentMail', 'hCaptcha', 'Coinbase CDP', 'Convex', 'Anthropic', 'Browser Use', 'Laminar', 'HUD', 'SuperMemory', 'Vercel'].map((s) => (
               <span
                 key={s}
                 className="font-mono text-xs text-white/30 px-3 py-1.5 rounded-full border border-white/6 hover:border-white/12 hover:text-white/40 transition-all duration-200 cursor-default"
@@ -86,10 +110,8 @@ export default function Footer() {
               <p className="font-mono text-xs text-white/30 tracking-[0.2em] mb-4">{cat}</p>
               <ul className="space-y-2.5">
                 {links.map((link) => (
-                  <li key={link}>
-                    <a href="#" className="font-sans text-sm text-white/30 hover:text-white/60 transition-colors duration-200">
-                      {link}
-                    </a>
+                  <li key={link.label}>
+                    <FooterLink href={link.href}>{link.label}</FooterLink>
                   </li>
                 ))}
               </ul>

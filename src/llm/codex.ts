@@ -4,24 +4,120 @@
  * Free with your ChatGPT subscription — no API credits needed.
  *
  * Port of bip-bu/codex_llm.py.
+ *
+ * All browser-use/llm types are defined locally to avoid dependency on the
+ * Python pip package (which has no npm equivalent).
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { BaseChatModel, ChatInvokeOptions } from "browser-use/llm/base";
-import {
-  ChatInvokeCompletion,
-  type ChatInvokeUsage,
-} from "browser-use/llm/views";
-import {
-  type Message,
-  SystemMessage,
-  UserMessage,
-  AssistantMessage,
-  ContentPartTextParam,
-  ContentPartImageParam,
-} from "browser-use/llm/messages";
+
+// ── Local type definitions (replaces browser-use/llm/* imports) ──
+
+export type ChatInvokeUsage = {
+  prompt_tokens: number;
+  prompt_cached_tokens: number | null;
+  prompt_cache_creation_tokens: number | null;
+  prompt_image_tokens: number | null;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export interface ChatInvokeOptions {
+  max_tokens?: number;
+  temperature?: number;
+  stop?: string[];
+  [key: string]: unknown;
+}
+
+export class ChatInvokeCompletion<T = unknown> {
+  parsed: T;
+  usage: ChatInvokeUsage | null;
+  tool_calls: unknown[] | null;
+  raw: unknown;
+  finish_reason: string;
+
+  constructor(
+    parsed: T,
+    usage: ChatInvokeUsage | null,
+    tool_calls: unknown[] | null,
+    raw: unknown,
+    finish_reason: string,
+  ) {
+    this.parsed = parsed;
+    this.usage = usage;
+    this.tool_calls = tool_calls;
+    this.raw = raw;
+    this.finish_reason = finish_reason;
+  }
+}
+
+export interface BaseChatModel {
+  model: string;
+  provider: string;
+  name: string;
+  model_name: string;
+  _verified_api_keys: boolean;
+  ainvoke(
+    messages: Message[],
+    output_format?: { parse: (input: string) => unknown } | undefined,
+    options?: ChatInvokeOptions,
+  ): Promise<ChatInvokeCompletion<any>>;
+}
+
+export class ContentPartTextParam {
+  type = "text" as const;
+  text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+export class ContentPartImageParam {
+  type = "image_url" as const;
+  image_url: { url: string };
+  constructor(url: string) {
+    this.image_url = { url };
+  }
+}
+
+type MessageContent = string | (ContentPartTextParam | ContentPartImageParam)[];
+
+export class Message {
+  role: string;
+  content: MessageContent;
+  tool_calls?: Array<{ id: string; functionCall: { name: string; arguments: string } }>;
+
+  constructor(role: string, content: MessageContent) {
+    this.role = role;
+    this.content = content;
+  }
+}
+
+export class SystemMessage extends Message {
+  constructor(content: MessageContent) {
+    super("system", content);
+  }
+}
+
+export class UserMessage extends Message {
+  constructor(content: MessageContent) {
+    super("user", content);
+  }
+}
+
+export class AssistantMessage extends Message {
+  constructor(
+    content: MessageContent,
+    tool_calls?: Array<{ id: string; functionCall: { name: string; arguments: string } }>,
+  ) {
+    super("assistant", content);
+    this.tool_calls = tool_calls;
+  }
+}
+
+// ── Codex implementation ──
 
 /**
  * Recursively fix 0-indexed element references in Codex output.
@@ -59,7 +155,7 @@ type CodexAuth = {
 function loadCodexAuth(authPath: string): CodexAuth {
   if (!existsSync(authPath)) {
     throw new Error(
-      `Codex auth not found at ${authPath}. Run 'codex auth login' first.`
+      `Codex auth not found at ${authPath}. Run 'codex auth login' first.`,
     );
   }
   return JSON.parse(readFileSync(authPath, "utf-8")) as CodexAuth;
@@ -67,7 +163,7 @@ function loadCodexAuth(authPath: string): CodexAuth {
 
 async function refreshToken(
   auth: CodexAuth,
-  authPath: string
+  authPath: string,
 ): Promise<CodexAuth> {
   console.log("   Refreshing Codex token...");
   const resp = await fetch(TOKEN_REFRESH_URL, {
@@ -80,7 +176,9 @@ async function refreshToken(
     }),
   });
   if (!resp.ok) {
-    throw new Error(`Token refresh failed: ${resp.status} ${await resp.text()}`);
+    throw new Error(
+      `Token refresh failed: ${resp.status} ${await resp.text()}`,
+    );
   }
   const data = (await resp.json()) as {
     access_token: string;
@@ -94,11 +192,11 @@ async function refreshToken(
 }
 
 /**
- * Convert browser-use Message[] to Codex Responses API format.
+ * Convert Message[] to Codex Responses API format.
  * Returns [instructions, inputMessages].
  */
 function serializeMessages(
-  messages: Message[]
+  messages: Message[],
 ): [string, Record<string, unknown>[]] {
   let instructions = "";
   const input: Record<string, unknown>[] = [];
@@ -108,7 +206,9 @@ function serializeMessages(
       const text =
         typeof msg.content === "string"
           ? msg.content
-          : msg.content.map((p: { text: string }) => p.text).join("\n");
+          : (msg.content as ContentPartTextParam[])
+              .map((p) => p.text)
+              .join("\n");
       instructions = instructions ? `${instructions}\n${text}` : text;
     } else if (msg instanceof UserMessage) {
       if (typeof msg.content === "string") {
@@ -189,7 +289,7 @@ export class ChatCodex implements BaseChatModel {
   }
 
   private async streamRequest(
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
   ): Promise<{ text: string; usage: ChatInvokeUsage | null }> {
     await this.ensureFreshToken();
 
@@ -245,10 +345,12 @@ export class ChatCodex implements BaseChatModel {
             const respData = event.response as Record<string, unknown>;
             const usage = respData?.usage as Record<string, unknown>;
             if (usage) {
-              const inputDetails = (usage.input_tokens_details ?? {}) as Record<string, unknown>;
+              const inputDetails = (usage.input_tokens_details ??
+                {}) as Record<string, unknown>;
               usageData = {
                 prompt_tokens: (usage.input_tokens as number) ?? 0,
-                prompt_cached_tokens: (inputDetails.cached_tokens as number) ?? null,
+                prompt_cached_tokens:
+                  (inputDetails.cached_tokens as number) ?? null,
                 prompt_cache_creation_tokens: null,
                 prompt_image_tokens: null,
                 completion_tokens: (usage.output_tokens as number) ?? 0,
@@ -257,9 +359,15 @@ export class ChatCodex implements BaseChatModel {
             }
             // Grab full text from completed response if not accumulated
             if (!fullText) {
-              const output = (respData?.output ?? []) as Record<string, unknown>[];
+              const output = (respData?.output ?? []) as Record<
+                string,
+                unknown
+              >[];
               for (const item of output) {
-                const content = (item.content ?? []) as Record<string, unknown>[];
+                const content = (item.content ?? []) as Record<
+                  string,
+                  unknown
+                >[];
                 for (const part of content) {
                   if (part.type === "output_text") {
                     fullText = (part.text as string) ?? "";
@@ -280,20 +388,19 @@ export class ChatCodex implements BaseChatModel {
   async ainvoke(
     messages: Message[],
     output_format?: { parse: (input: string) => unknown } | undefined,
-    options?: ChatInvokeOptions
+    options?: ChatInvokeOptions,
   ): Promise<ChatInvokeCompletion<any>> {
     let [instructions, inputMsgs] = serializeMessages(messages);
 
     // Inject JSON schema into instructions so Codex knows the expected format.
-    // We can't use text.format because Codex API is stricter than OpenAI's
-    // and rejects schemas with optional fields.
     if (output_format && "safeParse" in output_format) {
       try {
-        const { zodSchemaToJsonSchema } = await import("browser-use/llm/schema");
-        const schema = zodSchemaToJsonSchema(output_format as any);
-        instructions += `\n\n<json_schema>\n${JSON.stringify({ name: "agent_output", schema, strict: true }, null, 2)}\n</json_schema>\n\nYou MUST respond with valid JSON matching the schema above. Do not include any text outside the JSON object.`;
+        // If a zodSchemaToJsonSchema helper is available, use it.
+        // Otherwise just instruct Codex to respond with JSON.
+        instructions +=
+          "\n\nYou MUST respond with valid JSON. Do not include any text outside the JSON object.";
       } catch {
-        // If schema conversion fails, continue without it
+        // continue without schema hint
       }
     }
 
@@ -336,11 +443,11 @@ export class ChatCodex implements BaseChatModel {
           result.usage,
           null,
           null,
-          "end_turn"
+          "end_turn",
         );
       } catch (e) {
         throw new Error(
-          `Failed to parse Codex response: ${e}\nRaw: ${result.text.slice(0, 500)}`
+          `Failed to parse Codex response: ${e}\nRaw: ${result.text.slice(0, 500)}`,
         );
       }
     }
@@ -350,7 +457,7 @@ export class ChatCodex implements BaseChatModel {
       result.usage,
       null,
       null,
-      "end_turn"
+      "end_turn",
     );
   }
 }
@@ -358,9 +465,7 @@ export class ChatCodex implements BaseChatModel {
 /**
  * Check if Codex auth is available (i.e. ~/.codex/auth.json exists).
  */
-export function isCodexAvailable(
-  authPath?: string
-): boolean {
+export function isCodexAvailable(authPath?: string): boolean {
   const p = authPath ?? join(homedir(), ".codex", "auth.json");
   return existsSync(p);
 }

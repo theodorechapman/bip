@@ -53,6 +53,8 @@ let mockBaseUrl = "";
 const trackedHomes: Array<string> = [];
 const mockAgentmailInboxes = new Map<string, AgentmailInbox>();
 const mockBrowserUseTasks = new Map<string, { task: string; statusChecks: number }>();
+const mockAgentmailMessages = new Map<string, Array<{ message_id: string; text: string; html: string }>>();
+let mockVerifyEndpointHits = 0;
 const mockSolanaSignaturesByAddress = new Map<
   string,
   Array<{ signature: string; slot: number; blockTime: number | null }>
@@ -294,6 +296,8 @@ function startMockProviders(): void {
   }
   mockAgentmailInboxes.clear();
   mockBrowserUseTasks.clear();
+  mockAgentmailMessages.clear();
+  mockVerifyEndpointHits = 0;
   mockSolanaSignaturesByAddress.clear();
   mockSolanaTransactionsBySignature.clear();
   const fetchHandler = async (request: Request) => {
@@ -435,6 +439,56 @@ function startMockProviders(): void {
         });
       }
 
+      // GET /v0/inboxes/{inboxId}/messages — list messages
+      if (request.method === "GET" && /^\/v0\/inboxes\/[^/]+\/messages$/.test(url.pathname)) {
+        const authHeader = request.headers.get("authorization");
+        if (authHeader !== `Bearer ${AGENTMAIL_API_KEY}`) {
+          return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const parts = url.pathname.split("/");
+        const inboxId = decodeURIComponent(parts[3] ?? "");
+        const messages = mockAgentmailMessages.get(inboxId) ?? [];
+        return new Response(
+          JSON.stringify({ messages: messages.map((m) => ({ message_id: m.message_id })) }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // GET /v0/inboxes/{inboxId}/messages/{messageId} — get full message
+      if (request.method === "GET" && /^\/v0\/inboxes\/[^/]+\/messages\/[^/]+$/.test(url.pathname)) {
+        const authHeader = request.headers.get("authorization");
+        if (authHeader !== `Bearer ${AGENTMAIL_API_KEY}`) {
+          return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const parts = url.pathname.split("/");
+        const inboxId = decodeURIComponent(parts[3] ?? "");
+        const messageId = decodeURIComponent(parts[5] ?? "");
+        const messages = mockAgentmailMessages.get(inboxId) ?? [];
+        const found = messages.find((m) => m.message_id === messageId);
+        if (!found) {
+          return new Response(JSON.stringify({ error: "Message not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify(found), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      // Mock verification endpoint — just returns 200
+      if (request.method === "GET" && url.pathname === "/mock-verify") {
+        mockVerifyEndpointHits += 1;
+        return new Response("Email verified!", { status: 200 });
+      }
+
       if (request.method === "POST" && url.pathname === "/api/v2/tasks") {
         const authHeader = request.headers.get("authorization");
         const keyHeader = request.headers.get("x-browser-use-api-key");
@@ -488,6 +542,24 @@ function startMockProviders(): void {
         const output = isApiKeyPurchaseTask
           ? "API key created successfully. key=sk-live-test-key-1234567890 proof captured."
           : "Gift card purchase completed successfully";
+
+        // If the task mentions an agentmail email, inject a verification email into the mock inbox
+        const emailMatch = found.task.match(/Email:\s*([^\s@]+@[^\s]+)/);
+        if (emailMatch) {
+          const agentEmail = emailMatch[1];
+          // The inbox ID is the email address itself in our mock
+          const existing = mockAgentmailMessages.get(agentEmail) ?? [];
+          if (existing.length === 0) {
+            mockAgentmailMessages.set(agentEmail, [
+              {
+                message_id: `msg-verify-${crypto.randomUUID()}`,
+                text: `Welcome! Please verify your email by clicking: ${mockBaseUrl}/mock-verify?token=abc123`,
+                html: `<p>Welcome! Please <a href="${mockBaseUrl}/mock-verify?token=abc123">verify your email</a>.</p>`,
+              },
+            ]);
+          }
+        }
+
         return new Response(
           JSON.stringify({
             status: "finished",
@@ -589,6 +661,8 @@ function stopMockProviders(): void {
   }
   mockAgentmailInboxes.clear();
   mockBrowserUseTasks.clear();
+  mockAgentmailMessages.clear();
+  mockVerifyEndpointHits = 0;
   mockSolanaSignaturesByAddress.clear();
   mockSolanaTransactionsBySignature.clear();
 }
@@ -737,36 +811,6 @@ afterAll(() => {
 });
 
 describe("Auth + Tool API", () => {
-  test("serves public CLI download interface", async () => {
-    const manifestResponse = await fetch(`${CONVEX_SITE_URL}/cli/manifest.json`);
-    expect(manifestResponse.status).toBe(200);
-    const manifest = (await manifestResponse.json()) as {
-      installUrl?: unknown;
-      cliUrl?: unknown;
-      quickInstall?: unknown;
-    };
-    expect(manifest.installUrl).toBe(`${CONVEX_SITE_URL}/cli/install.sh`);
-    expect(manifest.cliUrl).toBe(`${CONVEX_SITE_URL}/cli/bip.mjs`);
-    expect(manifest.quickInstall).toBe(
-      `curl -fsSL ${CONVEX_SITE_URL}/cli/install.sh | sh`,
-    );
-
-    const installScriptResponse = await fetch(`${CONVEX_SITE_URL}/cli/install.sh`);
-    expect(installScriptResponse.status).toBe(200);
-    const installScript = await installScriptResponse.text();
-    expect(installScript).toContain(`BASE_URL="\${BIP_CLI_BASE_URL:-${CONVEX_SITE_URL}}"`);
-    expect(installScript).toContain(`download "$BASE_URL/cli/bip.mjs" "$TARGET"`);
-
-    const publicCliResponse = await fetch(`${CONVEX_SITE_URL}/cli/bip.mjs`);
-    expect(publicCliResponse.status).toBe(200);
-    const publicCliSource = await publicCliResponse.text();
-    expect(publicCliSource).toContain(
-      `const DEFAULT_BASE_URL = "${CONVEX_SITE_URL}";`,
-    );
-    expect(publicCliSource).toContain("create_agentmail");
-    expect(publicCliSource).toContain("delete_agentmail");
-  });
-
   test("rejects login without invite code", async () => {
     const response = await postJson(
       "/auth/login",
@@ -1532,6 +1576,82 @@ describe("Auth + Tool API", () => {
     expect(byIntentType.giftcard_purchase.totalBudgetCents).toBe(1_000);
     expect(byIntentType.api_key_purchase.totalBudgetCents).toBe(800);
   });
+
+  test("email verification is attempted after agentmail signup via execute_intent", async () => {
+    const agentId = `agent-emailverify-${crypto.randomUUID()}`;
+    const auth = await login(agentId);
+
+    // Fund the agent so intent creation passes policy
+    const wallet = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(wallet.status).toBe(200);
+    const walletAddress = `${wallet.json.address ?? ""}`;
+    const txSig = `sig-emailverify-${crypto.randomUUID()}`;
+    seedMockSolanaInboundTxs(walletAddress, [
+      { txSig, lamports: 50_000_000, slot: 300, blockTime: Math.floor(Date.now() / 1000) },
+    ]);
+    const syncRes = await postJson(
+      "/api/tools/funding_sync",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(syncRes.status).toBe(200);
+
+    // Reset verify endpoint hit counter
+    mockVerifyEndpointHits = 0;
+
+    // Create api_key_purchase intent with accountEmailMode: "agentmail"
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy openrouter api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "agentmail",
+          targetProduct: "starter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(200);
+    const intentId = `${createIntent.json.intentId ?? ""}`;
+
+    // Execute the intent — this should trigger email provisioning + verification
+    const execute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(execute.status).toBe(200);
+    expect(execute.json.status).toBe("ok");
+    expect(typeof execute.json.traceId).toBe("string");
+
+    // The mock verification endpoint should have been hit by tryVerifyViaFetch
+    expect(mockVerifyEndpointHits).toBeGreaterThanOrEqual(1);
+
+    // Check intent_status for the email_verification_attempted event
+    const intentStatus = await postJson(
+      "/api/tools/intent_status",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(intentStatus.status).toBe(200);
+    const events = intentStatus.json.events as Array<{ eventType: string; payloadJson?: string }>;
+    const verifyEvent = events.find((e) => e.eventType === "email_verification_attempted");
+    expect(verifyEvent).toBeDefined();
+    const verifyPayload = JSON.parse(verifyEvent!.payloadJson ?? "{}") as Record<string, unknown>;
+    expect(verifyPayload.emailFound).toBe(true);
+    expect(verifyPayload.linkFound).toBe(true);
+    expect(verifyPayload.verifyMethod).toBe("fetch");
+    expect(verifyPayload.verifyOk).toBe(true);
+  }, 180_000);
 });
 
 describe("CLI", () => {

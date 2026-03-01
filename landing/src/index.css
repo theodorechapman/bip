@@ -83,6 +83,23 @@ body {
   color: #F0EFE9;
 }
 
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 9999;
+  background: #f8fafc;
+  color: #07080A;
+  border-radius: 9999px;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: top 180ms ease;
+}
+.skip-link:focus {
+  top: 1rem;
+}
+
 .font-pixel         { font-family: 'Geist Pixel Square',   'Geist Mono', monospace; }
 .font-pixel-grid    { font-family: 'Geist Pixel Grid',     'Geist Mono', monospace; }
 .font-pixel-circle  { font-family: 'Geist Pixel Circle',   'Geist Mono', monospace; }
@@ -176,6 +193,32 @@ code,
 .token-operator { color: #89DDFF; }
 .token-punct    { color: #BABED8; }
 .token-val      { color: #F78C6C; }
+
+*:focus-visible {
+  outline: 2px solid #05D96A;
+  outline-offset: 2px;
+}
+
+input:focus-visible {
+  outline: 2px solid #05D96A;
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .marquee-track {
+    animation: none !important;
+  }
+}
 
 /* ─── Email artifact fade-in ────────────────────────────────────────────── */
 @keyframes fadeSlideIn {

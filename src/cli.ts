@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import {
@@ -50,6 +50,7 @@ type LoginResponse = {
   expiresAt: number;
   maxApiCalls: number;
   remainingApiCalls: number;
+  agentId?: string;
 };
 
 type UserRetrieveResponse = {
@@ -80,11 +81,12 @@ type DeleteAgentmailResponse = {
 type GenericOk = Record<string, unknown>;
 
 const CLI_VERSION = "0.1.0";
-const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
+const CONFIG_DIR = join(homedir(), ".config", "bip");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const CONSENT_FILE = join(CONFIG_DIR, "consent.json");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
 const ENCRYPTION_KEY_FILE = join(CONFIG_DIR, ".encryption-key");
+const AGENT_ID_FILE = join(CONFIG_DIR, "agent-id");
 
 const SCRYPT_N = 2 ** 18;
 const SCRYPT_R = 8;
@@ -149,6 +151,26 @@ function readJsonFile<T>(filePath: string): T | null {
   } catch {
     return null;
   }
+}
+
+function getAgentId(): string | null {
+  const fromEnv = process.env.BIP_AGENT_ID?.trim();
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  if (existsSync(AGENT_ID_FILE)) {
+    try {
+      const id = readFileSync(AGENT_ID_FILE, "utf-8").trim();
+      if (id.length > 0) return id;
+    } catch {
+      /* ignore */
+    }
+  }
+  const consent = getConsent();
+  return consent?.agentId ?? null;
+}
+
+function persistAgentId(agentId: string): void {
+  ensureConfigDir();
+  atomicWrite(AGENT_ID_FILE, agentId.trim(), 0o600);
 }
 
 function getConfig(): Config {
@@ -279,10 +301,8 @@ function commonHeaders(): Record<string, string> {
     "Content-Type": "application/json",
     "X-CLI-Version": CLI_VERSION,
   };
-  const consent = getConsent();
-  if (consent !== null) {
-    headers["X-Agent-Id"] = consent.agentId;
-  }
+  const agentId = getAgentId();
+  headers["X-Agent-Id"] = agentId ?? "bootstrap";
   return headers;
 }
 
@@ -316,7 +336,7 @@ async function postJson<T>(
   return data as T;
 }
 
-async function callProtectedTool<T>(path: string, body: unknown): Promise<T> {
+export async function callProtectedTool<T>(path: string, body: unknown): Promise<T> {
   const credentials = loadCredentials();
   if (credentials === null) {
     throw new Error("Not logged in. Run `bun run cli -- login` first.");
@@ -361,8 +381,8 @@ loadEnvFile(join(process.cwd(), ".env.local"));
 const program = new Command();
 
 program
-  .name("moonpay-agent-demo")
-  .description("Convex demo CLI for MoonPay-style AI agent authentication flow")
+  .name("bip")
+  .description("BIP — payments and auth for autonomous agents")
   .option("--json", "Output JSON");
 
 program
@@ -376,27 +396,48 @@ program
 
 const consent = program.command("consent").description("Manage local consent and agent identity");
 
+function generateStableAgentId(): string {
+  const hex = randomBytes(12).toString("hex");
+  return `bip_${hex}`;
+}
+
 consent.command("accept").action(() => {
   const existing = getConsent();
+  const agentId = existing?.agentId ?? generateStableAgentId();
   const next: Consent = {
     tosVersion: "1.2-demo",
     acceptedAt: new Date().toISOString(),
-    agentId: existing?.agentId ?? crypto.randomUUID(),
+    agentId,
   };
   setConsent(next);
+  persistAgentId(agentId);
   const globalOpts = program.opts<{ json?: boolean }>();
   print(next, Boolean(globalOpts.json));
 });
 
 consent.command("check").action(() => {
   const existing = getConsent();
+  const agentId = getAgentId();
   const globalOpts = program.opts<{ json?: boolean }>();
-  if (existing === null) {
-    print({ accepted: false }, Boolean(globalOpts.json));
+  if (existing === null && agentId === null) {
+    print({ accepted: false, agentId: null }, Boolean(globalOpts.json));
     return;
   }
-  print({ accepted: true, ...existing }, Boolean(globalOpts.json));
+  print({ accepted: existing !== null, agentId: agentId ?? undefined, ...existing }, Boolean(globalOpts.json));
 });
+
+program
+  .command("agent-id")
+  .description("Print the current agent identity (persist this for Browser Use, AgentMail, credentials)")
+  .action(() => {
+    const agentId = getAgentId();
+    const globalOpts = program.opts<{ json?: boolean }>();
+    if (agentId === null) {
+      print({ agentId: null, hint: "Run 'consent accept' or 'login' with x-agent-id: bootstrap first" }, Boolean(globalOpts.json));
+      return;
+    }
+    print({ agentId }, Boolean(globalOpts.json));
+  });
 
 program
   .command("login")
@@ -410,7 +451,6 @@ program
     HCAPTCHA_TEST_RESPONSE_TOKEN,
   )
   .action(async (args: { inviteCode?: string; captchaToken: string }) => {
-    requireConsent();
     const inviteCode =
       args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
     if (inviteCode.length === 0) {
@@ -433,10 +473,14 @@ program
       expiresAt: result.expiresAt * 1000,
       baseUrl,
     });
+    if (typeof result.agentId === "string" && result.agentId.length > 0) {
+      persistAgentId(result.agentId);
+    }
     const globalOpts = program.opts<{ json?: boolean }>();
     print(
       {
         ok: true,
+        agentId: result.agentId,
         expiresAt: new Date(result.expiresAt * 1000).toISOString(),
         maxApiCalls: result.maxApiCalls,
         remainingApiCalls: result.remainingApiCalls,
@@ -574,6 +618,24 @@ program
     });
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
+  });
+
+// Bootstrap command — zero-touch provisioning
+program
+  .command("bootstrap")
+  .description("Zero-touch bootstrap: auto-provision all API keys and services")
+  .option("--skip-cj", "Skip CJ Dropshipping signup")
+  .option("--skip-llm", "Skip LLM provider signup")
+  .option("--skip-shopify", "Skip Shopify store creation")
+  .option("--skip-x", "Skip X account provisioning")
+  .action(async (args: { skipCj?: boolean; skipLlm?: boolean; skipShopify?: boolean; skipX?: boolean }) => {
+    const { bootstrap } = await import("./bootstrap");
+    await bootstrap({
+      skipCj: args.skipCj,
+      skipLlm: args.skipLlm,
+      skipShopify: args.skipShopify,
+      skipX: args.skipX,
+    });
   });
 
 // Shopify autopilot commands

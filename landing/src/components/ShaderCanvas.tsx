@@ -117,6 +117,9 @@ export default function ShaderCanvas({ className = '' }: { className?: string })
   const startRef = useRef(performance.now());
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 

@@ -1,12 +1,9 @@
 /**
- * OpenRouter provider — automates signup and API key creation using browser-use.
- * Port of bip-bu/providers/openrouter.py.
+ * OpenRouter provider — automates signup and API key creation using Browser Use Cloud API.
+ * Port of bip-bu/providers/openrouter.py, rewritten for the Cloud API task-based approach.
  */
 
-import { Agent, BrowserSession, BrowserProfile, Controller, ActionResult } from "browser-use";
-import { ChatAnthropic } from "browser-use/llm/anthropic";
-import { ChatOpenAI } from "browser-use/llm/openai";
-import { ChatCodex, isCodexAvailable } from "../llm/codex";
+import { getBrowserUseClient } from "../../scenarios/browser-use/client";
 import {
   waitForEmail,
   extractVerificationLink,
@@ -20,125 +17,139 @@ function generatePassword(): string {
   return randomBytes(16).toString("base64url") + "!A1";
 }
 
-function getLLM() {
-  // Prefer Codex (free with ChatGPT Plus/Pro)
-  if (isCodexAvailable()) {
-    console.log("   Using Codex (free via ChatGPT subscription)");
-    return new ChatCodex({ model: "gpt-5.3-codex" });
-  }
-  if (process.env.OPENAI_API_KEY) {
-    console.log("   Using OpenAI gpt-4o");
-    return new ChatOpenAI({
-      model: "gpt-4o",
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    console.log("   Using Anthropic Claude");
-    return new ChatAnthropic({
-      model: "claude-sonnet-4-20250514",
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
-  }
-  throw new Error("Set up Codex auth (~/.codex/auth.json), OPENAI_API_KEY, or ANTHROPIC_API_KEY");
-}
-
 export async function getOpenRouterKey(): Promise<string | null> {
   // Always create a fresh inbox for signup (previous ones may already be registered)
   const inbox = await createOrReuseInbox(true);
   const email = inbox.email || inbox.inbox_id;
   const knownIds = await getExistingMessageIds(inbox.inbox_id);
+  const password = generatePassword();
 
   console.log(`\n   Using email: ${email}`);
 
-  // Set up custom controller with email verification action
-  const controller = new Controller();
-  controller.registry.action(
-    "Check the agent's email inbox for a verification email and return the verification link. Call this after signing up when you need to verify your email.",
-    {},
-  )(async function check_verification_email() {
-    console.log("   [Action] Checking inbox for verification email...");
-    const msg = await waitForEmail(inbox.inbox_id, knownIds, 90, 2);
-    if (msg) {
-      const link = extractVerificationLink(msg);
-      if (link) {
-        console.log("   [Action] Found verification link!");
-        return new ActionResult({
-          extracted_content: `Verification link found: ${link}`,
-        });
-      }
-      return new ActionResult({
-        extracted_content: "Email received but no verification link found in it.",
-      });
-    }
-    return new ActionResult({
-      extracted_content: "No verification email received within timeout.",
+  const client = getBrowserUseClient();
+
+  // Create a session with keepAlive for multi-step flow
+  let sessionId: string | undefined;
+  try {
+    const session = await client.sessions.create({
+      keepAlive: true,
+      proxyCountryCode: "us",
     });
-  });
+    sessionId = session.id;
+  } catch (err: any) {
+    console.error("   Failed to create browser session:", err?.message);
+    throw new Error("BROWSER_USE_API_KEY required for OpenRouter signup");
+  }
 
-  const profile = new BrowserProfile({
-    headless: process.env.BIP_HEADLESS !== "false",
-    highlight_elements: true,
-    allowed_domains: ["*.openrouter.ai", "*.clerk.accounts.dev", "*.accounts.dev"],
-  });
-  const browserSession = new BrowserSession({ browser_profile: profile });
+  try {
+    // ── Step 1: Sign up on OpenRouter ──
+    console.log("   [1/3] Starting OpenRouter signup...");
 
-  const task = `
-You are automating the full process of signing up for OpenRouter and getting an API key.
+    const signupTask = `
+You are automating signup on OpenRouter.
 
 STEP 1 - SIGN UP:
 1. Go to https://openrouter.ai/
 2. Click "Sign Up" button
 3. Use email signup (NOT Google/GitHub OAuth)
-4. Email: use the sensitive data 'email'
-5. Password: use the sensitive data 'password'
+4. Email: ${email}
+5. Password: ${password}
 6. Accept terms checkbox if present
 7. Click Continue
 
-STEP 2 - VERIFY EMAIL:
-8. After you see "Verify your email", use the check_verification_email action to get the verification link
-9. Navigate to the verification link URL in the browser
-10. Wait for verification to complete
+After signup, if the site asks you to verify your email, report "VERIFICATION_NEEDED".
+If signup completes without email verification, report "SIGNUP_COMPLETE".
+If you encounter issues, report "FAILED: <reason>".
+`.trim();
 
-STEP 3 - HANDLE ONBOARDING:
-11. After verification, the site may show onboarding modals or surveys (e.g. "How did you hear about us?")
-12. For any survey or questionnaire modal: select any option and click Continue/Submit to dismiss it
-13. Do NOT just close modals with the X button — fill them out and submit them so they don't reappear
+    const signupResult = await client.run(signupTask, {
+      sessionId,
+      allowedDomains: ["*.openrouter.ai", "*.clerk.accounts.dev", "*.accounts.dev"],
+      timeout: 180_000,
+    });
 
-STEP 4 - CREATE API KEY:
-14. Navigate to https://openrouter.ai/settings/keys
-15. If you're not logged in, sign in with the same email and password
-16. Click "Create Key" or similar button
-17. Name the key "bip-auto" if asked
-18. IMPORTANT: Copy the full API key value displayed. It starts with "sk-or-"
-19. Do NOT close any modal showing the key
-20. Return ONLY the API key string as your final answer
-`;
+    const signupOutput = String(signupResult.output ?? "");
+    console.log(`   Signup result: ${signupOutput.slice(0, 200)}`);
 
-  const agent = new Agent({
-    task,
-    llm: getLLM(),
-    browser_session: browserSession,
-    controller,
-    max_actions_per_step: 5,
-    use_vision: true,
-    sensitive_data: {
-      "*.openrouter.ai": { email, password: generatePassword() },
-    },
-  });
+    // ── Step 2: Email verification ──
+    if (signupOutput.includes("VERIFICATION_NEEDED") || signupOutput.includes("verify")) {
+      console.log("   [2/3] Checking for verification email...");
 
-  try {
-    const history = await agent.run(50);
-    const final = history.final_result();
+      const msg = await waitForEmail(inbox.inbox_id, knownIds, 90, 2);
+      if (msg) {
+        const link = extractVerificationLink(msg);
+        if (link) {
+          console.log("   Found verification link, clicking...");
 
-    if (final) {
-      const keyMatch = String(final).match(/sk-or-[a-zA-Z0-9_-]+/);
-      if (keyMatch) return keyMatch[0];
-      return String(final);
+          const verifyTask = `
+Navigate to this verification link and complete email verification:
+${link}
+
+After verification, handle any onboarding modals or surveys:
+- For any survey or questionnaire, select any option and click Continue/Submit
+- Do NOT just close modals with X — fill them out so they don't reappear
+
+After verification is complete, report "VERIFIED".
+`.trim();
+
+          await client.run(verifyTask, {
+            sessionId,
+            timeout: 120_000,
+          });
+          console.log("   Verification completed");
+        } else {
+          console.log("   Email received but no verification link found, continuing...");
+        }
+      } else {
+        console.log("   No verification email received, continuing...");
+      }
     }
+
+    // ── Step 3: Create API key ──
+    console.log("   [3/3] Creating API key...");
+
+    const keyTask = `
+You are on OpenRouter (or need to navigate there).
+
+STEP 1: Navigate to https://openrouter.ai/settings/keys
+STEP 2: If not logged in, sign in with email "${email}" and password "${password}"
+STEP 3: Handle any onboarding modals by filling them out and clicking Continue
+STEP 4: Click "Create Key" or similar button
+STEP 5: Name the key "bip-auto" if asked
+STEP 6: IMPORTANT: Copy the full API key value displayed. It starts with "sk-or-"
+STEP 7: Return ONLY the API key string (starting with "sk-or-") as your final answer
+
+Do NOT close any modal showing the key before copying it.
+`.trim();
+
+    const keyResult = await client.run(keyTask, {
+      sessionId,
+      allowedDomains: ["*.openrouter.ai", "*.clerk.accounts.dev", "*.accounts.dev"],
+      timeout: 180_000,
+    });
+
+    const keyOutput = String(keyResult.output ?? "");
+    console.log(`   Key result: ${keyOutput.slice(0, 100)}`);
+
+    // Extract the API key
+    const keyMatch = keyOutput.match(/sk-or-[a-zA-Z0-9_-]+/);
+    if (keyMatch) {
+      console.log("   API key obtained successfully");
+      return keyMatch[0];
+    }
+
+    console.log("   Could not extract API key from output");
+    return keyOutput || null;
+  } catch (e: any) {
+    console.error("   Error:", e?.message ?? e);
     return null;
-  } catch (e) {
-    console.error("   Error:", e);
-    return null;
+  } finally {
+    if (sessionId) {
+      try {
+        await client.sessions.stop(sessionId);
+      } catch {
+        // best-effort cleanup
+      }
+    }
   }
 }

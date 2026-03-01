@@ -212,6 +212,15 @@ export default defineSchema({
     .index("by_user_id_and_status", ["userId", "fulfillmentStatus"])
     .index("by_user_id_and_shopify_order_id", ["userId", "shopifyOrderId"]),
 
+  agentBrowserProfiles: defineTable({
+    userId: v.id("users"),
+    provider: v.string(),
+    profileId: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_user_id_and_provider", ["userId", "provider"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
   agentmailWebhookMessages: defineTable({
     inboxId: v.string(),
     messageId: v.string(),

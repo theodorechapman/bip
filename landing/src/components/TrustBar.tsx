@@ -59,6 +59,48 @@ const partners: Partner[] = [
     logos: ['https://browser-use.com/logo-white.svg'],
     fallback: 'BU',
   },
+  {
+    name: 'Laminar',
+    tag: 'Observability',
+    logos: ['https://api.iconify.design/simple-icons/lmstudio.svg?color=%23fff'],
+    fallback: 'LM',
+  },
+  {
+    name: 'HUD',
+    tag: 'Evaluation',
+    logos: ['https://api.iconify.design/lucide/monitor-check.svg?color=%23fff'],
+    fallback: 'HD',
+  },
+  {
+    name: 'SuperMemory',
+    tag: 'Memory',
+    logos: ['https://api.iconify.design/lucide/brain.svg?color=%23fff'],
+    fallback: 'SM',
+  },
+  {
+    name: 'Dedalus Labs',
+    tag: 'Research',
+    logos: ['https://api.iconify.design/lucide/flask-conical.svg?color=%23fff'],
+    fallback: 'DL',
+  },
+  {
+    name: 'Daytona',
+    tag: 'Dev Env',
+    logos: ['https://api.iconify.design/lucide/container.svg?color=%23fff'],
+    fallback: 'DT',
+  },
+  {
+    name: 'Vercel',
+    tag: 'Deploy',
+    logos: ['https://api.iconify.design/simple-icons/vercel.svg?color=%23fff'],
+    fallback: 'VC',
+  },
+  {
+    name: 'VibeFlow',
+    tag: 'Workflow',
+    logos: ['https://api.iconify.design/lucide/workflow.svg?color=%23fff'],
+    fallback: 'VF',
+  },
 ];
 
 function LogoImage({
@@ -108,7 +150,7 @@ export default function TrustBar() {
   const marqueePartners = [...partners, ...partners];
 
   return (
-    <section className="py-16 px-8 md:px-16 lg:px-24 bg-[#07080A] border-b border-white/5">
+    <section className="py-16 px-6 sm:px-8 md:px-16 lg:px-24 bg-[#07080A] border-b border-white/5">
       <div className="max-w-[960px] mx-auto">
         <p className="font-pixel text-sm text-white/40 tracking-[0.3em] text-center mb-8">
           Powered by

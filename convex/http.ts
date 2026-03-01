@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
-import { renderSkillMarkdown } from "./publicCliAssets";
+import { renderInstallScript, renderSkillMarkdown } from "./publicCliAssets";
 import { PHASE1_OFFERINGS, PHASE1_POLICY_DEFAULTS } from "./offerings";
 
 const http = httpRouter();
@@ -395,6 +395,22 @@ http.route({
   handler: httpAction(async (_ctx, req) => {
     const origin = getRequestOrigin(req);
     return text(200, renderSkillMarkdown(origin), "text/markdown; charset=utf-8");
+  }),
+});
+
+http.route({
+  path: "/install.sh",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const origin = getRequestOrigin(req);
+    const script = renderInstallScript(origin);
+    return new Response(script, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/x-shellscript",
+        "Cache-Control": "public, max-age=300",
+      },
+    });
   }),
 });
 
@@ -938,6 +954,44 @@ http.route({
 });
 
 http.route({
+  path: "/api/tools/shopify_register",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "shopify_register");
+      if (!auth.ok) return auth.response;
+      const body = await req.json().catch(() => ({}));
+      const payload = body as { domain?: unknown; accessToken?: unknown };
+      const domain = typeof payload.domain === "string" ? payload.domain.trim() : "";
+      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken.trim() : "";
+      if (!domain || !accessToken) {
+        return json(400, {
+          error: "domain and accessToken are required",
+          hint: "Run `bip shopify setup` then `bip shopify register` to sync store credentials.",
+        });
+      }
+      const domainNorm = domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase();
+      const secretRef = `shopify_${domainNorm.replace(/[^a-z0-9]/g, "_")}_${Date.now()}`;
+      const secrets: any = (internal as any).secrets;
+      await ctx.runMutation(secrets._putSecret, {
+        secretRef,
+        userId: auth.session.userId,
+        provider: "shopify",
+        secretType: "shopify_store",
+        secretValue: JSON.stringify({ domain: domainNorm, accessToken }),
+      });
+      return json(200, {
+        ok: true,
+        domain: domainNorm,
+        message: "Shopify store registered. shopify_list_products and shopify_cycle will use these credentials.",
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/secrets_get",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
@@ -1040,15 +1094,14 @@ http.route({
         userId: target.userId,
         maxTx: payload.maxTx,
       });
+      // NOTE: agentId override has no role check yet — any authenticated
+      // user can sync funding for another agent. Add operator/admin role
+      // restriction before production use.
       return json(200, {
         ...out,
         userId: target.userId,
         agentId: target.agentId,
         triggeredByAgentId: auth.session.agentId,
-        hardeningNote:
-          typeof payload.agentId === "string" && payload.agentId.trim().length > 0
-            ? "TODO: restrict agentId override to operator/admin role."
-            : undefined,
       });
     } catch (error) {
       return json(400, { error: errorToMessage(error) });

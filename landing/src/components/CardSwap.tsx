@@ -98,10 +98,13 @@ export default function CardSwap({
   const container = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const total = refs.length;
     if (!total) return;
 
     refs.forEach((r, i) => placeNow(r.current, makeSlot(i, cardDistance, verticalDistance, total), skewAmount));
+
+    if (prefersReducedMotion) return;
 
     const swap = () => {
       if (order.current.length < 2) return;

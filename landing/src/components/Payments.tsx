@@ -6,20 +6,23 @@ gsap.registerPlugin(ScrollTrigger);
 
 /* ─── x402 flow visualizer ───────────────────────────────────────────────── */
 function X402Flow() {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(1);
 
   const steps = [
     { from: 'Agent',   to: 'Endpoint',  msg: 'GET /api/resource',           col: '#FFFFFF', opacity: 0.4 },
     { from: 'Endpoint', to: 'Agent',   msg: '402 Payment Required',          col: '#05D96A', opacity: 0.9 },
-    { from: 'Agent',   to: 'BIP',      msg: 'bip pay --x402',               col: '#00D9AA', opacity: 0.9 },
+    { from: 'Agent',   to: 'BIP',      msg: 'intent_create --rail x402',     col: '#00D9AA', opacity: 0.9 },
     { from: 'BIP',     to: 'Endpoint', msg: 'Payment-Payload: $0.50 USDC',   col: '#05D96A', opacity: 0.9 },
     { from: 'Endpoint', to: 'Agent',   msg: '200 OK · resource returned',    col: '#FFFFFF', opacity: 0.55 },
   ];
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => {
       setStep(p => (p + 1) % (steps.length + 2));
-    }, 1100);
+    }, 1400);
     return () => clearInterval(id);
   }, []);
 
@@ -60,12 +63,15 @@ function CheckoutFlow() {
     { label: 'Billing Zip', value: '94105',               col: '#00D9AA' },
   ];
 
-  const [filled, setFilled] = useState(0);
+  const [filled, setFilled] = useState(1);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const id = setInterval(() => {
       setFilled(p => (p >= fields.length ? 0 : p + 1));
-    }, 900);
+    }, 1400);
     return () => clearInterval(id);
   }, []);
 
@@ -122,7 +128,7 @@ const ERAS = [
     year: '2026–27',
     label: 'Emerging',
     title: 'x402 agent-native payments',
-    desc: 'HTTP 402 becomes the agent payment primitive. Agent hits an endpoint, gets 402, BIP pays in-protocol. No form, no human flow. Machine-to-machine. We already support this.',
+    desc: 'HTTP 402 becomes the agent payment primitive. Agent hits an endpoint, gets 402, BIP pays in-protocol. No form, no human flow. Machine-to-machine.',
     tag: 'x402 · USDC · A2A',
     col: '#05D96A',
     active: true,
@@ -142,6 +148,9 @@ export default function Payments() {
   const sectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const ctx = gsap.context(() => {
       gsap.from('.pay-header', {
         y: 40,
@@ -174,7 +183,7 @@ export default function Payments() {
     <section
       id="payments"
       ref={sectionRef}
-      className="py-16 md:py-24 px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5"
+      className="py-16 md:py-24 px-6 sm:px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5"
     >
       <div className="max-w-[1100px] mx-auto">
 
@@ -204,7 +213,7 @@ export default function Payments() {
             <p className="text-white/25 text-base font-light mt-4 leading-relaxed">
               Agent hits an endpoint. Server responds 402. BIP pays in the HTTP layer. Resource returned.{' '}
               <span className="text-[#05D96A]/70">No form. No human. No checkout page.</span>{' '}
-              We already do this for A2A payments today.
+              The future of A2A payments.
             </p>
           </div>
           <div className="pay-cell">
@@ -274,7 +283,7 @@ export default function Payments() {
           </div>
           <p className="font-mono text-sm text-white/15 mt-8 max-w-xl leading-relaxed">
             BIP's payments layer is an abstraction. Today it swaps between prepaid Visa and x402. Tomorrow it speaks Visa TAP, on-chain settlement, agent-native endpoints. The agent just calls{' '}
-            <span className="text-white/30">bip pay</span>. BIP figures out the rail.
+            <span className="text-white/30">bip intent_create</span>. BIP figures out the rail.
           </p>
         </div>
 

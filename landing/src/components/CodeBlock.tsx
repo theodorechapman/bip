@@ -12,67 +12,86 @@ const LINES = [
     { t: ' -fsSL bip.sh | sh', c: 'text-white/70' },
   ]},
   { tokens: [] },
-  { tokens: [{ t: '# Provision an agent identity', c: 'token-comment' }] },
+  { tokens: [{ t: '# Accept terms & authenticate', c: 'token-comment' }] },
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
-    { t: 'bip consent ', c: 'text-white/70' },
-    { t: '--agent', c: 'token-param' },
-    { t: ' my-agent-01 ', c: 'token-string' },
-    { t: '--scope', c: 'token-param' },
-    { t: ' auth,captcha,session,payments', c: 'token-string' },
+    { t: 'bip consent accept', c: 'text-white/70' },
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ Consent granted · agent_id=my-agent-01', c: 'token-comment' },
+    { t: '✓ Consent granted · agent_id=a7f3...c12e', c: 'token-comment' },
   ]},
-  { tokens: [] },
-  { tokens: [{ t: '# Authenticate to any site', c: 'token-comment' }] },
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
     { t: 'bip login ', c: 'text-white/70' },
-    { t: '--target', c: 'token-param' },
-    { t: ' stripe.com', c: 'token-string' },
-    { t: '        # AgentMail + session', c: 'token-comment' },
+    { t: '--invite-code', c: 'token-param' },
+    { t: ' BIP-ALPHA', c: 'token-string' },
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ session issued · sha256:a3f9...c12e · ttl=86400s', c: 'token-comment' },
+    { t: '✓ session issued · ttl=86400s · 100 api calls remaining', c: 'token-comment' },
   ]},
   { tokens: [] },
-  { tokens: [{ t: '# Pay via x402 (agent-to-agent)', c: 'token-comment' }] },
+  { tokens: [{ t: '# Create a payment intent', c: 'token-comment' }] },
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
-    { t: 'bip pay ', c: 'text-white/70' },
-    { t: '--target', c: 'token-param' },
-    { t: ' api.service.xyz ', c: 'token-string' },
-    { t: '--amount', c: 'token-param' },
-    { t: ' 0.50', c: 'token-val' },
-    { t: '   # x402 in-protocol', c: 'token-comment' },
+    { t: 'bip intent_create ', c: 'text-white/70' },
+    { t: '--task', c: 'token-param' },
+    { t: ' "buy OpenRouter API key"', c: 'token-string' },
+    { t: ' --budget-usd', c: 'token-param' },
+    { t: ' 5', c: 'token-val' },
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ 402 → paid · $0.50 USDC · resource unlocked', c: 'token-comment' },
+    { t: '✓ intent created · id=intent_9x...f2 · status=pending', c: 'token-comment' },
   ]},
   { tokens: [] },
-  { tokens: [{ t: '# Pay at any checkout (web)', c: 'token-comment' }] },
+  { tokens: [{ t: '# Approve & execute — Browser Use handles it', c: 'token-comment' }] },
   { tokens: [
     { t: '$ ', c: 'text-white/20' },
-    { t: 'bip pay ', c: 'text-white/70' },
-    { t: '--target', c: 'token-param' },
-    { t: ' shop.example.com', c: 'token-string' },
-    { t: ' --card', c: 'token-param' },
-    { t: ' default', c: 'token-string' },
+    { t: 'bip intent_approve ', c: 'text-white/70' },
+    { t: '--intent-id', c: 'token-param' },
+    { t: ' intent_9x...f2', c: 'token-string' },
+  ]},
+  { tokens: [
+    { t: '$ ', c: 'text-white/20' },
+    { t: 'bip intent_execute ', c: 'text-white/70' },
+    { t: '--intent-id', c: 'token-param' },
+    { t: ' intent_9x...f2', c: 'token-string' },
   ]},
   { tokens: [
     { t: '  ', c: '' },
-    { t: '✓ checkout filled · Visa ···4242 · order confirmed', c: 'token-comment' },
+    { t: '✓ Browser Use task started · navigating openrouter.ai', c: 'token-comment' },
+  ]},
+  { tokens: [
+    { t: '  ', c: '' },
+    { t: '✓ API key captured · secretRef=ref_k8...a1 · verified', c: 'token-comment' },
   ]},
 ];
 
 export default function CodeBlock() {
   const sectionRef = useRef<HTMLElement>(null);
+  const [copied, setCopied] = React.useState(false);
+  const copyTimerRef = React.useRef<number | null>(null);
+  const commandText = 'curl -fsSL bip.sh | sh';
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(commandText);
+      setCopied(true);
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
 
   useEffect(() => {
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+
     const ctx = gsap.context(() => {
       gsap.from('.code-reveal', {
         y: 40,
@@ -85,8 +104,16 @@ export default function CodeBlock() {
     return () => ctx.revert();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
   return (
-    <section ref={sectionRef} className="py-16 md:py-24 px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5">
+    <section ref={sectionRef} className="py-16 md:py-24 px-6 sm:px-8 md:px-16 lg:px-24 bg-[#07080A] border-t border-white/5">
       <div className="max-w-[960px] mx-auto">
 
         <div className="mb-8">
@@ -95,12 +122,12 @@ export default function CodeBlock() {
             className="font-sans font-light leading-none tracking-normal mb-3"
             style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)' }}
           >
-            4 commands.
+            Intent in. Result out.
             <br />
-            <span className="text-white/25">Auth and payments, any surface.</span>
+            <span className="text-white/25">Browser Use does the rest.</span>
           </h2>
           <p className="text-white/30 font-light max-w-md leading-relaxed text-lg">
-            Auth0 requires connectors. Stripe requires integrations. BIP requires neither.
+            Create an intent, approve it, execute it. BIP orchestrates Browser Use to navigate sites, fill forms, and capture credentials — autonomously.
           </p>
         </div>
 
@@ -142,13 +169,13 @@ export default function CodeBlock() {
             <div className="px-6 md:px-8 pb-6 border-t border-white/5 pt-4">
               <p className="font-mono text-sm text-white/25 mb-3 tracking-[0.15em]">stdout</p>
               <div className="space-y-1.5 font-mono text-sm">
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ CLI installed — v0.2.1-alpha</p>
-                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ agent_id=my-agent-01 provisioned · scope=auth,captcha,session,payments</p>
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ session issued · stripe.com · authorized</p>
-                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ x402 paid · $0.50 USDC · resource unlocked</p>
-                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ checkout filled · Visa ···4242 · order confirmed</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ CLI installed — v0.1.0</p>
+                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ consent accepted · agent_id=a7f3...c12e</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ logged in · 100 api calls · session ttl=86400s</p>
+                <p style={{ color: '#00D9AA', opacity: 0.65 }}>✓ intent created · api_key_purchase · budget=$5.00</p>
+                <p style={{ color: '#05D96A', opacity: 0.65 }}>✓ Browser Use executed · API key captured · verified</p>
                 <p className="text-white/20 mt-3">
-                  Agent ready. Auth and payments on <span className="text-white/40">any web surface</span>.
+                  Agent funded. Intent executed. Credential secured by <span className="text-white/40">reference</span>.
                 </p>
               </div>
             </div>
@@ -156,12 +183,20 @@ export default function CodeBlock() {
         </div>
 
         <div className="mt-10 flex items-center gap-4">
-          <button className="btn-magnetic btn-slide px-7 py-3.5 bg-white text-[#07080A] rounded-full font-bold text-sm">
-            curl -fsSL bip.sh | sh →
+          <button
+            type="button"
+            className="btn-magnetic btn-slide px-7 py-3.5 bg-white text-[#07080A] rounded-full font-bold text-sm"
+            onClick={handleCopy}
+            aria-live="polite"
+          >
+            {copied ? 'Copied ✅' : 'curl -fsSL bip.sh | sh →'}
           </button>
-          <button className="btn-magnetic px-7 py-3.5 border border-white/10 text-white/40 rounded-full font-medium text-sm hover:border-white/20 hover:text-white/60 transition-all duration-300">
+          <a
+            href="/docs"
+            className="btn-magnetic px-7 py-3.5 border border-white/10 text-white/40 rounded-full font-medium text-sm hover:border-white/20 hover:text-white/60 transition-all duration-300"
+          >
             API reference
-          </button>
+          </a>
         </div>
 
       </div>
