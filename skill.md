@@ -1,138 +1,174 @@
 ---
-name: bip-agent-gateway
-version: 0.2.0
-description: "universal agent endpoint: create/approve/execute intents, run browser-use tasks, and return traceable results over plain http."
-tags: [agents, payments, browser-use, api, tracing, laminar, hud]
+name: bip
+version: 1.0.0
+description: "agent commerce runtime: authenticated intents, wallet/email bootstrap, browser+rail execution, and fulfillment artifacts (codes/keys/proofs)."
+tags: [agents, commerce, payments, gift-cards, api-keys, browser-use, crypto, x402]
 metadata:
   openclaw:
     emoji: "🧠"
-  homepage: https://github.com/theodorechapman/bip
+  homepage: https://bip.opalbot.gg/skill.md
 ---
 
-# bip skill.md (agent onboarding)
+# bip skill.md
 
-use this when you want any agent (claude code, codex, curl bot, etc.) to call one endpoint and execute web/payment tasks with run traces.
+bip is a hosted runtime for autonomous agents to request paid actions (cards, credits, account setup), execute safely, and return verifiable outputs.
 
-## live endpoint
+base url:
 
 ```bash
-BASE="https://standing-aardvark-407.convex.site"
+BASE="https://bip.opalbot.gg"
 ```
 
-## what this gives you
+---
 
-- login/session token for agent calls
-- intent lifecycle: drafted/approved/submitted/confirmed/failed
-- browser-use backed execution
-- run artifacts + status APIs
-- trace id on execute responses (`traceId`) for observability routing
+## core use cases
 
-## fastest onboarding (copy/paste)
+- buy gift cards (bitrefill flow)
+- acquire API access/credits (e.g. provider onboarding + key retrieval flow)
+- bootstrap an agent identity (wallet + inbox + auth)
+- run browser workflows with payment/checkout handoffs
+- return fulfillment artifacts (code/key refs, receipts, traces)
+
+---
+
+## auth model
+
+bip requires authenticated sessions.
 
 ```bash
-BASE="https://standing-aardvark-407.convex.site"
-BU_KEY="<your-browser-use-key>"
 AGENT_ID="agent-$(date +%s)"
 
-# 1) login
 TOKEN=$(curl -s -X POST "$BASE/auth/login" \
-  -H 'content-type: application/json' \
+  -H "content-type: application/json" \
   -H "x-agent-id: $AGENT_ID" \
-  -d '{}' | jq -r '.accessToken')
+  -d '{
+    "inviteCode":"opalbip2026",
+    "captchaToken":"10000000-aaaa-bbbb-cccc-000000000001"
+  }' | jq -r '.accessToken')
+```
+
+---
+
+## quickstart flow (agent bootstrap -> intent -> execute)
+
+```bash
+# 1) bootstrap identity (wallet + inbox best effort)
+curl -s -X POST "$BASE/api/tools/agent_bootstrap" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"chain":"solana","emailPrefix":"bip.agent"}' | jq
 
 # 2) create intent
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"task":"open example.com and return title","budgetUsd":2,"rail":"auto"}' | jq -r '.intentId')
+  -H "content-type: application/json" \
+  -d '{
+    "intentType":"api_key_purchase",
+    "provider":"openrouter",
+    "task":"create account, add credits, retrieve API key",
+    "budgetUsd":8,
+    "rail":"auto",
+    "metadata":{"mode":"browser_checkout"}
+  }' | jq -r '.intentId')
 
-# 3) execute intent
-EXEC=$(curl -s -X POST "$BASE/api/tools/execute_intent" \
+# 3) execute (idempotency required)
+curl -s -X POST "$BASE/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
-  -H "x-browser-use-api-key: $BU_KEY" \
-  -H 'content-type: application/json' \
-  -d "{\"intentId\":\"$INTENT\"}")
-
-echo "$EXEC" | jq
-RUN_ID=$(echo "$EXEC" | jq -r '.runId')
-
-# 4) run status
-curl -s -X POST "$BASE/api/tools/run_status" \
-  -H "authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d "{\"runId\":\"$RUN_ID\"}" | jq
+  -H "x-idempotency-key: run-$INTENT-1" \
+  -H "x-browser-use-api-key: <BU_KEY>" \
+  -H "content-type: application/json" \
+  -d "{\"intentId\":\"$INTENT\"}" | jq
 ```
 
-## api contract (minimal)
+---
 
-- `POST /auth/login` (header: `X-Agent-Id`)
-- `POST /api/tools/create_intent`
-- `POST /api/tools/approve_intent` (if intent needs approval)
-- `POST /api/tools/execute_intent` (supports `X-Browser-Use-API-Key`)
-- `POST /api/tools/intent_status`
-- `POST /api/tools/run_status`
+## key endpoints
 
-## tracing + observability
-
-execute responses include:
-
-- `traceId`
-- `runId`
-- `taskId`
-- `status`
-
-lifecycle emits currently include:
-
-- `started`
-- `rail_selected`
-- `failed`
-- `confirmed`
-
-optional external sinks (server env):
-
-- `LAMINAR_INGEST_URL` (+ optional `LAMINAR_API_KEY`)
-- `HUD_TRACE_URL` (+ optional `HUD_API_KEY`)
-
-## rails
-
-- `auto` (currently resolves to `x402`)
-- `x402` (scaffold/routing)
-- `bitrefill` (scaffold/routing)
-- `card` (scaffold/routing)
-
-## current build status
-
-working now:
-- end-to-end intent -> execute -> run_status
-- browser-use execution verified
-- trace ids returned and stored in events
-
-not final yet:
-- full rail settlement logic
-- hardened production auth policy
-- advanced swarm comparison dashboards
-
-
-## packaged north-star (agent self-bootstrap)
-
-bip should support a full self-bootstrap flow for any external agent:
-
-1. create agent identity + api key
-2. provision agentmail inbox
-3. provision agent wallet(s) (sol/base)
-4. fund wallet and credit ledger
-5. run signup/purchase intents (e.g. api key purchase)
-6. store credential as `secretRef` (never plaintext)
-7. if blocked, return `action_required` + real `liveSessionUrl`, then resume
-
-### target endpoints (next)
-
+- `POST /auth/login`
 - `POST /api/tools/agent_bootstrap`
-- `POST /api/tools/wallet_deposit`
-- `POST /api/tools/create_intent` (`intentType=api_key_purchase`)
+- `POST /api/tools/create_intent`
+- `POST /api/tools/approve_intent`
 - `POST /api/tools/execute_intent`
 - `POST /api/tools/intent_resume`
 - `POST /api/tools/intent_status`
 - `POST /api/tools/run_status`
+- `POST /api/tools/wallet_generate`
+- `POST /api/tools/wallet_balance`
+- `POST /api/tools/wallet_deposit`
+- `POST /api/tools/wallet_transfer`
+- `POST /api/tools/secrets_get`
 
-this is the packaged skill positioning: **hosted agent commerce runtime**.
+---
+
+## intent patterns
+
+### 1) gift card purchase
+
+```json
+{
+  "intentType": "giftcard_purchase",
+  "provider": "bitrefill",
+  "task": "buy $25 amazon us card to email",
+  "budgetUsd": 25,
+  "rail": "bitrefill"
+}
+```
+
+### 2) api key purchase
+
+```json
+{
+  "intentType": "api_key_purchase",
+  "provider": "openrouter",
+  "task": "create account + buy starter credits + retrieve key",
+  "budgetUsd": 10,
+  "rail": "auto"
+}
+```
+
+### 3) crypto checkout capture/autopay
+
+```json
+{
+  "intentType": "bitrefill_crypto_checkout",
+  "provider": "bitrefill",
+  "task": "reach SOL invoice page and return exact payment address + amount",
+  "budgetUsd": 10,
+  "rail": "auto"
+}
+```
+
+---
+
+## responses you should handle
+
+- `status: ok` → completed
+- `status: action_required` → human step needed (login/captcha/payment confirmation)
+- `status: failed` → execution failed (check `error` + events)
+
+execute responses may include:
+- `traceId`
+- `runId`
+- `taskId`
+- `handoffUrl` (if available)
+- `credential.secretRef` (for key/card secret storage)
+
+---
+
+## safety and policy expectations
+
+- provider allowlist enforced
+- idempotency required for execute
+- spend caps should be set per intent/day
+- secrets should be returned by reference (`secretRef`) and audited
+- keep kill switch available for paid execution
+
+---
+
+## operator notes
+
+for launch/testing with autonomous agents:
+- use scoped API keys/session tokens per agent
+- keep budget constraints explicit in every intent
+- prefer short, deterministic tasks over giant prompts
+- use `intent_status` + `run_status` for state reconciliation
