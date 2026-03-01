@@ -449,6 +449,11 @@ curl -s -X POST "${origin}/api/tools/offering_list" \
   -H "content-type: application/json" \
   -d '{}' | jq '.offerings'
 
+curl -s -X POST "${origin}/api/tools/funding_sync" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
+
 INTENT=$(curl -s -X POST "${origin}/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
@@ -476,6 +481,10 @@ curl -s -X POST "${origin}/api/tools/spend_summary" \
 - POST /api/tools/intent_status
 - POST /api/tools/run_status
 - POST /api/tools/spend_summary
+- POST /api/tools/wallet_deposit_address
+- POST /api/tools/funding_sync
+- POST /api/tools/funding_status
+- POST /api/tools/funding_mark_settled (admin override)
 
 ## notes
 - offering registry + policy caps + idempotency enforced

@@ -46,27 +46,33 @@ curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
   -H "content-type: application/json" \
   -d '{}' | jq '{address, memo, reference}'
 
-# 3) create paid intent
+# 3) send SOL on-chain to the returned address, then sync funding credits
+curl -s -X POST "$BASE/api/tools/funding_sync" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
+
+# 4) create paid intent
 curl -s -X POST "$BASE/api/tools/offering_list" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{}' | jq '.offerings'
 
-# 4) create policy-validated paid intent
+# 5) create policy-validated paid intent
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{"intentType":"giftcard_purchase","provider":"bitrefill","task":"buy $10 card and return fulfillment","budgetUsd":10,"rail":"auto","metadata":{"cardRef":"card_ops_primary_xxxxxx"}}' \
   | jq -r '.intentId')
 
-# 5) execute
+# 6) execute
 curl -s -X POST "$BASE/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "x-idempotency-key: exec-$INTENT-1" \
   -H "content-type: application/json" \
   -d "{\"intentId\":\"$INTENT\"}" | jq
 
-# 6) intent lifecycle + spend summary
+# 7) intent lifecycle + spend summary
 curl -s -X POST "$BASE/api/tools/intent_status" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
@@ -99,6 +105,8 @@ curl -s -X POST "$BASE/api/tools/spend_summary" \
 - `POST /api/tools/treasury_card_add` (admin + bearer + `x-admin-token`)
 - `POST /api/tools/treasury_card_list` (masked metadata only)
 - `POST /api/tools/wallet_deposit_address` (returns primary solana funding target)
+- `POST /api/tools/funding_sync` (scans Solana inbound txs and auto-credits unprocessed `solana_settled` deposits)
+- `POST /api/tools/funding_status` (detected inbound Solana txs + credited/uncredited state)
 - `POST /api/tools/funding_mark_settled` (admin-settles solana funding into ledger)
 
 ## policy/safety

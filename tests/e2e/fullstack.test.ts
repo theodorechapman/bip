@@ -53,6 +53,11 @@ let mockBaseUrl = "";
 const trackedHomes: Array<string> = [];
 const mockAgentmailInboxes = new Map<string, AgentmailInbox>();
 const mockBrowserUseTasks = new Map<string, { task: string; statusChecks: number }>();
+const mockSolanaSignaturesByAddress = new Map<
+  string,
+  Array<{ signature: string; slot: number; blockTime: number | null }>
+>();
+const mockSolanaTransactionsBySignature = new Map<string, JsonRecord>();
 
 function commandToString(cmd: Array<string>): string {
   return cmd.map((part) => JSON.stringify(part)).join(" ");
@@ -233,12 +238,64 @@ function createAgentmailInboxId(username: string, domain: string | null): string
   return `${username}@${domain ?? AGENTMAIL_DEFAULT_DOMAIN}`;
 }
 
+function seedMockSolanaInboundTxs(
+  walletAddress: string,
+  txs: Array<{
+    txSig: string;
+    lamports: number;
+    slot: number;
+    blockTime: number;
+  }>,
+): void {
+  mockSolanaSignaturesByAddress.set(
+    walletAddress,
+    txs.map((tx) => ({
+      signature: tx.txSig,
+      slot: tx.slot,
+      blockTime: tx.blockTime,
+    })),
+  );
+  for (const tx of txs) {
+    const preBalance = 1_000_000_000;
+    mockSolanaTransactionsBySignature.set(tx.txSig, {
+      slot: tx.slot,
+      blockTime: tx.blockTime,
+      meta: {
+        err: null,
+        preBalances: [preBalance, 9_000_000_000],
+        postBalances: [preBalance + tx.lamports, 9_000_000_000 - tx.lamports],
+      },
+      transaction: {
+        message: {
+          accountKeys: [
+            {
+              pubkey: walletAddress,
+              signer: false,
+              writable: true,
+              source: "transaction",
+            },
+            {
+              pubkey: "11111111111111111111111111111111",
+              signer: true,
+              writable: true,
+              source: "transaction",
+            },
+          ],
+        },
+        signatures: [tx.txSig],
+      },
+    });
+  }
+}
+
 function startMockProviders(): void {
   if (mockServer !== null) {
     return;
   }
   mockAgentmailInboxes.clear();
   mockBrowserUseTasks.clear();
+  mockSolanaSignaturesByAddress.clear();
+  mockSolanaTransactionsBySignature.clear();
   const fetchHandler = async (request: Request) => {
       const url = new URL(request.url);
 
@@ -440,6 +497,64 @@ function startMockProviders(): void {
         );
       }
 
+      if (request.method === "POST" && url.pathname === "/solana/rpc") {
+        const body = (await request.json()) as {
+          id?: unknown;
+          method?: unknown;
+          params?: unknown;
+        };
+        const id = body.id ?? 1;
+        const method = typeof body.method === "string" ? body.method : "";
+        const params = Array.isArray(body.params) ? body.params : [];
+        if (method === "getSignaturesForAddress") {
+          const address = typeof params[0] === "string" ? params[0] : "";
+          const rows = mockSolanaSignaturesByAddress.get(address) ?? [];
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: rows.map((row) => ({
+                signature: row.signature,
+                slot: row.slot,
+                err: null,
+                memo: null,
+                blockTime: row.blockTime,
+                confirmationStatus: "confirmed",
+              })),
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (method === "getTransaction") {
+          const txSig = typeof params[0] === "string" ? params[0] : "";
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: mockSolanaTransactionsBySignature.get(txSig) ?? null,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: "Method not found" },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
       return new Response(JSON.stringify({ error: "Not found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
@@ -470,6 +585,8 @@ function stopMockProviders(): void {
   }
   mockAgentmailInboxes.clear();
   mockBrowserUseTasks.clear();
+  mockSolanaSignaturesByAddress.clear();
+  mockSolanaTransactionsBySignature.clear();
 }
 
 async function configureConvexTestEnv(): Promise<void> {
@@ -523,6 +640,16 @@ async function configureConvexTestEnv(): Promise<void> {
   );
   await runCommandWithRetry(
     ["bunx", "convex", "env", "set", "BROWSER_USE_API_KEY", BROWSER_USE_API_KEY],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "SOLANA_RPC_URL", `${mockBaseUrl}/solana/rpc`],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "SOLANA_FUNDING_USD_PER_SOL", "100"],
     20,
     500,
   );
@@ -1034,6 +1161,128 @@ describe("Auth + Tool API", () => {
     expect(walletBalance.status).toBe(200);
     const account = walletBalance.json.account as Record<string, unknown>;
     expect(account.availableCents).toBe(1550);
+  });
+
+  test("funding_sync scans Solana inbound tx and credits once only", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const depositAddress = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(depositAddress.status).toBe(200);
+    const address = `${depositAddress.json.address ?? ""}`;
+    expect(address.length).toBeGreaterThan(20);
+
+    seedMockSolanaInboundTxs(address, [
+      {
+        txSig: "test-solana-sync-signature-1",
+        lamports: 100_000_000,
+        slot: 101,
+        blockTime: 1_726_000_000,
+      },
+    ]);
+
+    const firstSync = await postJson(
+      "/api/tools/funding_sync",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(firstSync.status).toBe(200);
+    expect(firstSync.json.ok).toBe(true);
+    expect(firstSync.json.detectedCount).toBe(1);
+    expect(firstSync.json.creditedCount).toBe(1);
+    expect(firstSync.json.alreadyCreditedCount).toBe(0);
+    expect(firstSync.json.totalCreditedCents).toBe(1000);
+
+    const secondSync = await postJson(
+      "/api/tools/funding_sync",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(secondSync.status).toBe(200);
+    expect(secondSync.json.ok).toBe(true);
+    expect(secondSync.json.detectedCount).toBe(1);
+    expect(secondSync.json.creditedCount).toBe(0);
+    expect(secondSync.json.alreadyCreditedCount).toBe(1);
+    expect(secondSync.json.totalCreditedCents).toBe(0);
+
+    const walletBalance = await postJson(
+      "/api/tools/wallet_balance",
+      { chain: "solana" },
+      { token: auth.accessToken },
+    );
+    expect(walletBalance.status).toBe(200);
+    const account = walletBalance.json.account as Record<string, unknown>;
+    expect(account.availableCents).toBe(1000);
+  });
+
+  test("funding_status reports credited and uncredited Solana inbound txs", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const user = await postJson(
+      "/api/tools/user_retrieve",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(user.status).toBe(200);
+    const agentId = `${user.json.agentId ?? ""}`;
+    expect(agentId.length).toBeGreaterThan(0);
+
+    const depositAddress = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(depositAddress.status).toBe(200);
+    const address = `${depositAddress.json.address ?? ""}`;
+    expect(address.length).toBeGreaterThan(20);
+
+    const creditedTxSig = "test-solana-status-credited";
+    const pendingTxSig = "test-solana-status-uncredited";
+    seedMockSolanaInboundTxs(address, [
+      {
+        txSig: pendingTxSig,
+        lamports: 90_000_000,
+        slot: 111,
+        blockTime: 1_726_000_010,
+      },
+      {
+        txSig: creditedTxSig,
+        lamports: 75_000_000,
+        slot: 110,
+        blockTime: 1_726_000_000,
+      },
+    ]);
+
+    const markSettled = await postJson(
+      "/api/tools/funding_mark_settled",
+      {
+        userIdOrAgentId: agentId,
+        amountCents: 750,
+        txSig: creditedTxSig,
+        chain: "solana",
+      },
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(markSettled.status).toBe(200);
+
+    const status = await postJson(
+      "/api/tools/funding_status",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(status.status).toBe(200);
+    expect(status.json.detectedCount).toBe(2);
+    const txs = status.json.txs as Array<Record<string, unknown>>;
+    const credited = txs.find((tx) => `${tx.txSig ?? ""}` === creditedTxSig) ?? null;
+    const uncredited = txs.find((tx) => `${tx.txSig ?? ""}` === pendingTxSig) ?? null;
+    expect(credited).not.toBeNull();
+    expect(uncredited).not.toBeNull();
+    expect(credited?.credited).toBe(true);
+    expect(uncredited?.credited).toBe(false);
   });
 
   test("returns per-agent spend summary totals by provider and intentType", async () => {

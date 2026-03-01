@@ -82,6 +82,21 @@ export default defineSchema({
   })
     .index("by_entry_id", ["entryId"])
     .index("by_intent_id_and_created_at", ["intentId", "createdAt"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_ref_type_and_ref_id", ["refType", "refId"]),
+
+  processedFundingTxs: defineTable({
+    chain: v.string(),
+    txSig: v.string(),
+    userId: v.id("users"),
+    walletAddress: v.string(),
+    lamports: v.number(),
+    amountCents: v.number(),
+    slot: v.optional(v.number()),
+    blockTime: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_chain_and_tx_sig", ["chain", "txSig"])
     .index("by_user_id_and_created_at", ["userId", "createdAt"]),
 
   paymentIntents: defineTable({

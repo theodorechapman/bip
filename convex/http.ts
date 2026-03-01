@@ -865,6 +865,85 @@ http.route({
 });
 
 http.route({
+  path: "/api/tools/funding_sync",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "funding_sync");
+      if (!auth.ok) return auth.response;
+      const body = await req.json().catch(() => ({}));
+      const payload = body as { agentId?: unknown; maxTx?: unknown };
+      if (payload.agentId !== undefined && typeof payload.agentId !== "string") {
+        return json(400, { error: "agentId must be a string when provided" });
+      }
+      if (payload.maxTx !== undefined && typeof payload.maxTx !== "number") {
+        return json(400, { error: "maxTx must be a number when provided" });
+      }
+
+      const payments: any = (internal as any).payments;
+      let target = {
+        userId: auth.session.userId,
+        agentId: auth.session.agentId,
+      };
+      if (typeof payload.agentId === "string" && payload.agentId.trim().length > 0) {
+        const resolved = await ctx.runQuery(payments.resolveUserIdOrAgentId, {
+          userIdOrAgentId: payload.agentId,
+        });
+        if (resolved === null) {
+          return json(404, { error: "user not found" });
+        }
+        target = resolved;
+      }
+
+      const out = await ctx.runAction(payments.syncSolanaFundingForUser, {
+        userId: target.userId,
+        maxTx: payload.maxTx,
+      });
+      return json(200, {
+        ...out,
+        userId: target.userId,
+        agentId: target.agentId,
+        triggeredByAgentId: auth.session.agentId,
+        hardeningNote:
+          typeof payload.agentId === "string" && payload.agentId.trim().length > 0
+            ? "TODO: restrict agentId override to operator/admin role."
+            : undefined,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/funding_status",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "funding_status");
+      if (!auth.ok) return auth.response;
+      const body = await req.json().catch(() => ({}));
+      const payload = body as { maxTx?: unknown };
+      if (payload.maxTx !== undefined && typeof payload.maxTx !== "number") {
+        return json(400, { error: "maxTx must be a number when provided" });
+      }
+      const payments: any = (internal as any).payments;
+      const out = await ctx.runAction(payments.getSolanaFundingStatus, {
+        userId: auth.session.userId,
+        maxTx: payload.maxTx,
+      });
+      return json(200, {
+        ...out,
+        userId: auth.session.userId,
+        agentId: auth.session.agentId,
+      });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
   path: "/api/tools/funding_mark_settled",
   method: "POST",
   handler: httpAction(async (ctx, req) => {

@@ -158,6 +158,8 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 - `POST /api/tools/treasury_card_add` (admin-gated; stores backend card by `cardRef`)
 - `POST /api/tools/treasury_card_list` (admin-gated; masked metadata only)
 - `POST /api/tools/wallet_deposit_address` (returns/auto-provisions primary Solana funding address)
+- `POST /api/tools/funding_sync` (operator trigger; scans inbound Solana txs and auto-credits unprocessed deposits)
+- `POST /api/tools/funding_status` (shows detected inbound Solana txs and credited/uncredited state for current user)
 - `POST /api/tools/funding_mark_settled` (admin-gated; credits ledger from settled Solana transfer)
 
 ### Payments execution env
@@ -194,21 +196,33 @@ curl -s -X POST "$BASE/api/tools/wallet_deposit_address" \
   -H "content-type: application/json" \
   -d '{}' | jq '{address, memo, reference}'
 
-# 2) admin marks on-chain funding as settled -> credits internal ledger
+# 2) send SOL on-chain to that address, then trigger auto funding sync
+curl -s -X POST "$BASE/api/tools/funding_sync" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxTx":20}' | jq '{detectedCount, creditedCount, totalCreditedCents}'
+
+# 3) optional: inspect which txs are credited vs pending
+curl -s -X POST "$BASE/api/tools/funding_status" \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxTx":20}' | jq '{detectedCount, txs}'
+
+# 4) admin override remains available for manual settlement edits
 curl -s -X POST "$BASE/api/tools/funding_mark_settled" \
   -H "authorization: Bearer $TOKEN" \
   -H "x-admin-token: $ADMIN_CARD_WRITE_TOKEN" \
   -H "content-type: application/json" \
   -d '{"userIdOrAgentId":"agent-123","amountCents":1000,"txSig":"5f...","chain":"solana"}' | jq
 
-# 3) agent creates giftcard intent (metadata.cardRef optional if DEFAULT_TREASURY_CARD_REF is set)
+# 5) agent creates giftcard intent (metadata.cardRef optional if DEFAULT_TREASURY_CARD_REF is set)
 INTENT=$(curl -s -X POST "$BASE/api/tools/create_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d "{\"intentType\":\"giftcard_purchase\",\"provider\":\"bitrefill\",\"task\":\"buy $10 card and return fulfillment\",\"budgetUsd\":10,\"rail\":\"auto\",\"metadata\":{\"cardRef\":\"$CARD_REF\"}}" \
   | jq -r '.intentId')
 
-# 4) execute; artifacts include payment source marker only (no PAN/CVV)
+# 6) execute; artifacts include payment source marker only (no PAN/CVV)
 curl -s -X POST "$BASE/api/tools/execute_intent" \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \

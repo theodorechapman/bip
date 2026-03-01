@@ -51,6 +51,135 @@ function getSolRpcUrl(): string {
   return (process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com").trim();
 }
 
+function getSolanaFundingUsdPerSol(): number {
+  const raw = Number(process.env.SOLANA_FUNDING_USD_PER_SOL ?? "100");
+  return Number.isFinite(raw) && raw > 0 ? raw : 100;
+}
+
+function solLamportsToFundingCents(lamports: number): number {
+  const sol = lamports / LAMPORTS_PER_SOL;
+  const amount = Math.round(sol * getSolanaFundingUsdPerSol() * 100);
+  return Math.max(1, amount);
+}
+
+type InboundSolanaFundingTx = {
+  txSig: string;
+  walletAddress: string;
+  lamports: number;
+  amountSol: number;
+  amountCents: number;
+  slot: number | null;
+  blockTime: number | null;
+};
+
+function toAccountKeyString(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value !== null) {
+    const maybe = value as { pubkey?: unknown; toBase58?: (() => string) | undefined };
+    if (typeof maybe.pubkey === "string") return maybe.pubkey;
+    if (typeof maybe.pubkey === "object" && maybe.pubkey !== null) {
+      const withBase58 = maybe.pubkey as { toBase58?: (() => string) | undefined };
+      if (typeof withBase58.toBase58 === "function") return withBase58.toBase58();
+    }
+    if (typeof maybe.toBase58 === "function") return maybe.toBase58();
+  }
+  return null;
+}
+
+async function rpcCall(url: string, method: string, params: unknown[]): Promise<any> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  if (!res.ok) throw new Error(`solana_rpc_http_${res.status}`);
+  const json = (await res.json()) as any;
+  if (json?.error) throw new Error(`solana_rpc_error_${json.error?.message ?? "unknown"}`);
+  return json?.result ?? null;
+}
+
+async function scanInboundSolanaFundingTxs(params: {
+  walletAddresses: Array<string>;
+  maxTx: number;
+}): Promise<Array<InboundSolanaFundingTx>> {
+  if (params.walletAddresses.length === 0) return [];
+  const rpcUrl = getSolRpcUrl();
+  const walletSet = new Set(params.walletAddresses);
+  const sigMeta = new Map<string, { slot: number | null; blockTime: number | null }>();
+
+  for (const address of walletSet) {
+    try {
+      const sigs = (await rpcCall(rpcUrl, "getSignaturesForAddress", [
+        address,
+        { limit: params.maxTx },
+      ])) as Array<any>;
+      for (const row of sigs ?? []) {
+        if (row?.err != null) continue;
+        const signature = typeof row?.signature === "string" ? row.signature : null;
+        if (!signature) continue;
+        sigMeta.set(signature, {
+          slot: typeof row?.slot === "number" ? row.slot : null,
+          blockTime: typeof row?.blockTime === "number" ? row.blockTime : null,
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const out: Array<InboundSolanaFundingTx> = [];
+  for (const [signature, info] of sigMeta.entries()) {
+    let tx: any = null;
+    try {
+      tx = await rpcCall(rpcUrl, "getTransaction", [
+        signature,
+        { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+      ]);
+    } catch {
+      continue;
+    }
+    if (!tx || !tx.meta || tx.meta.err != null) continue;
+    const accountKeys = (tx?.transaction?.message?.accountKeys ?? []) as Array<unknown>;
+    const preBalances = (tx?.meta?.preBalances ?? []) as Array<number>;
+    const postBalances = (tx?.meta?.postBalances ?? []) as Array<number>;
+
+    let netInboundLamports = 0;
+    let topInboundAddress: string | null = null;
+    let topInboundLamports = 0;
+    for (let idx = 0; idx < accountKeys.length; idx += 1) {
+      const key = toAccountKeyString(accountKeys[idx]);
+      if (key === null || !walletSet.has(key)) continue;
+      const delta = (postBalances[idx] ?? 0) - (preBalances[idx] ?? 0);
+      netInboundLamports += delta;
+      if (delta > topInboundLamports) {
+        topInboundLamports = delta;
+        topInboundAddress = key;
+      }
+    }
+    if (netInboundLamports <= 0 || topInboundAddress === null) continue;
+    out.push({
+      txSig: signature,
+      walletAddress: topInboundAddress,
+      lamports: netInboundLamports,
+      amountSol: netInboundLamports / LAMPORTS_PER_SOL,
+      amountCents: solLamportsToFundingCents(netInboundLamports),
+      slot: typeof tx?.slot === "number" ? tx.slot : info.slot,
+      blockTime: typeof tx?.blockTime === "number" ? tx.blockTime : info.blockTime,
+    });
+  }
+
+  out.sort((a, b) => {
+    const aTime = a.blockTime ?? 0;
+    const bTime = b.blockTime ?? 0;
+    if (aTime !== bTime) return bTime - aTime;
+    const aSlot = a.slot ?? 0;
+    const bSlot = b.slot ?? 0;
+    return bSlot - aSlot;
+  });
+  return out;
+}
+
+
 function parseBitrefillInvoice(output: unknown): { address: string; amountSol: number } | null {
   if (typeof output !== "string") return null;
   const addr = output.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
@@ -1572,21 +1701,54 @@ export const _setIntentStatus = internalMutation({
   },
 });
 
+async function creditUserFundsRecord(
+  ctx: any,
+  args: {
+    userId: any;
+    amountCents: number;
+    refType?: string;
+    refId?: string;
+  },
+): Promise<{ ok: boolean; availableCents: number; heldCents: number }> {
+  if (args.amountCents <= 0) throw new Error("amountCents must be > 0");
+  const ts = now();
+  let account = await ctx.db
+    .query("agentAccounts")
+    .withIndex("by_user_id", (q: any) => q.eq("userId", args.userId))
+    .unique();
+  if (account === null) {
+    const id = await ctx.db.insert("agentAccounts", {
+      userId: args.userId,
+      currency: "USD",
+      availableCents: 0,
+      heldCents: 0,
+      status: "active",
+      createdAt: ts,
+      updatedAt: ts,
+    });
+    account = await ctx.db.get(id);
+  }
+  if (account === null) throw new Error("account_create_failed");
+  const available = account.availableCents + args.amountCents;
+  await ctx.db.patch(account._id, { availableCents: available, updatedAt: ts });
+  await ctx.db.insert("ledgerEntries", {
+    entryId: randomId("le"),
+    userId: args.userId,
+    type: "deposit",
+    amountCents: args.amountCents,
+    balanceAfterAvailableCents: available,
+    balanceAfterHeldCents: account.heldCents,
+    refType: args.refType,
+    refId: args.refId,
+    createdAt: ts,
+  });
+  return { ok: true, availableCents: available, heldCents: account.heldCents };
+}
+
 export const _creditUserFunds = internalMutation({
   args: { userId: v.id("users"), amountCents: v.number(), refType: v.optional(v.string()), refId: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    if (args.amountCents <= 0) throw new Error("amountCents must be > 0");
-    const ts = now();
-    let account = await ctx.db.query("agentAccounts").withIndex("by_user_id", (q) => q.eq("userId", args.userId)).unique();
-    if (account === null) {
-      const id = await ctx.db.insert("agentAccounts", { userId: args.userId, currency: "USD", availableCents: 0, heldCents: 0, status: "active", createdAt: ts, updatedAt: ts });
-      account = await ctx.db.get(id);
-    }
-    if (account === null) throw new Error("account_create_failed");
-    const available = account.availableCents + args.amountCents;
-    await ctx.db.patch(account._id, { availableCents: available, updatedAt: ts });
-    await ctx.db.insert("ledgerEntries", { entryId: randomId("le"), userId: args.userId, type: "deposit", amountCents: args.amountCents, balanceAfterAvailableCents: available, balanceAfterHeldCents: account.heldCents, refType: args.refType, refId: args.refId, createdAt: ts });
-    return { ok: true, availableCents: available, heldCents: account.heldCents };
+    return await creditUserFundsRecord(ctx, args);
   },
 });
 
@@ -1616,6 +1778,122 @@ export const _getAccount = internalQuery({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
     return await ctx.db.query("agentAccounts").withIndex("by_user_id", (q) => q.eq("userId", args.userId)).unique();
+  },
+});
+
+export const listUserWalletAddresses = internalQuery({
+  args: { userId: v.id("users"), chain: v.string() },
+  handler: async (ctx, args) => {
+    const wallets = await ctx.db
+      .query("agentWallets")
+      .withIndex("by_user_id_and_chain", (q) => q.eq("userId", args.userId).eq("chain", args.chain))
+      .collect();
+    return wallets.map((wallet) => wallet.address);
+  },
+});
+
+export const listCreditedSolanaLedgerRefsForUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("ledgerEntries")
+      .withIndex("by_user_id_and_created_at", (q) => q.eq("userId", args.userId))
+      .collect();
+    return rows
+      .filter(
+        (row) =>
+          row.type === "deposit" &&
+          row.refType === "solana_settled" &&
+          typeof row.refId === "string" &&
+          row.refId.length > 0,
+      )
+      .map((row) => ({
+        txSig: row.refId as string,
+        amountCents: row.amountCents,
+        createdAt: row.createdAt,
+      }));
+  },
+});
+
+export const settleSolanaFundingTx = internalMutation({
+  args: {
+    userId: v.id("users"),
+    txSig: v.string(),
+    walletAddress: v.string(),
+    lamports: v.number(),
+    slot: v.optional(v.number()),
+    blockTime: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const existingProcessed = await ctx.db
+      .query("processedFundingTxs")
+      .withIndex("by_chain_and_tx_sig", (q) => q.eq("chain", "solana").eq("txSig", args.txSig))
+      .unique();
+    if (existingProcessed !== null) {
+      return {
+        ok: true,
+        credited: false,
+        alreadyCredited: true,
+        reason: "already_processed",
+        txSig: args.txSig,
+        amountCents: existingProcessed.amountCents,
+      };
+    }
+
+    const existingLedgerRows = await ctx.db
+      .query("ledgerEntries")
+      .withIndex("by_ref_type_and_ref_id", (q) => q.eq("refType", "solana_settled").eq("refId", args.txSig))
+      .take(1);
+    const existingLedger = existingLedgerRows[0] ?? null;
+    if (existingLedger !== null) {
+      await ctx.db.insert("processedFundingTxs", {
+        chain: "solana",
+        txSig: args.txSig,
+        userId: existingLedger.userId,
+        walletAddress: args.walletAddress,
+        lamports: args.lamports,
+        amountCents: Math.max(0, existingLedger.amountCents),
+        slot: args.slot,
+        blockTime: args.blockTime,
+        createdAt: now(),
+      });
+      return {
+        ok: true,
+        credited: false,
+        alreadyCredited: true,
+        reason: "already_credited",
+        txSig: args.txSig,
+        amountCents: Math.max(0, existingLedger.amountCents),
+      };
+    }
+
+    const amountCents = solLamportsToFundingCents(args.lamports);
+    const credited = await creditUserFundsRecord(ctx, {
+      userId: args.userId,
+      amountCents,
+      refType: "solana_settled",
+      refId: args.txSig,
+    });
+    await ctx.db.insert("processedFundingTxs", {
+      chain: "solana",
+      txSig: args.txSig,
+      userId: args.userId,
+      walletAddress: args.walletAddress,
+      lamports: args.lamports,
+      amountCents,
+      slot: args.slot,
+      blockTime: args.blockTime,
+      createdAt: now(),
+    });
+    return {
+      ok: true,
+      credited: true,
+      alreadyCredited: false,
+      txSig: args.txSig,
+      amountCents,
+      availableCents: credited.availableCents,
+      heldCents: credited.heldCents,
+    };
   },
 });
 
@@ -1721,6 +1999,137 @@ export const _recordEvent = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.insert("paymentEvents", args);
     return { ok: true };
+  },
+});
+
+function clampFundingSyncMaxTx(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 25;
+  return Math.min(100, Math.max(1, Math.floor(value as number)));
+}
+
+export const getSolanaFundingStatus = internalAction({
+  args: {
+    userId: v.id("users"),
+    maxTx: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const maxTx = clampFundingSyncMaxTx(args.maxTx);
+    const payments: any = (internal as any).payments;
+    const walletAddresses = (await ctx.runQuery(payments.listUserWalletAddresses, {
+      userId: args.userId,
+      chain: "solana",
+    })) as Array<string>;
+    const detected = await scanInboundSolanaFundingTxs({
+      walletAddresses,
+      maxTx,
+    });
+
+    const creditedRows = (await ctx.runQuery(
+      payments.listCreditedSolanaLedgerRefsForUser,
+      { userId: args.userId },
+    )) as Array<{ txSig: string; amountCents: number; createdAt: number }>;
+    const creditedByTx = new Map(
+      creditedRows.map((row) => [row.txSig, { amountCents: row.amountCents, createdAt: row.createdAt }]),
+    );
+
+    const txs = detected.map((row) => {
+      const credited = creditedByTx.get(row.txSig);
+      return {
+        txSig: row.txSig,
+        walletAddress: row.walletAddress,
+        lamports: row.lamports,
+        amountSol: row.amountSol,
+        amountCents: row.amountCents,
+        slot: row.slot,
+        blockTime: row.blockTime,
+        credited: credited !== undefined,
+        creditedAmountCents: credited?.amountCents ?? null,
+        creditedAt: credited?.createdAt ?? null,
+      };
+    });
+
+    return {
+      ok: true,
+      chain: "solana",
+      maxTx,
+      walletCount: walletAddresses.length,
+      detectedCount: txs.length,
+      txs,
+    };
+  },
+});
+
+export const syncSolanaFundingForUser = internalAction({
+  args: {
+    userId: v.id("users"),
+    maxTx: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const maxTx = clampFundingSyncMaxTx(args.maxTx);
+    const payments: any = (internal as any).payments;
+    const status = (await ctx.runAction(payments.getSolanaFundingStatus, {
+      userId: args.userId,
+      maxTx,
+    })) as {
+      txs: Array<{
+        txSig: string;
+        walletAddress: string;
+        lamports: number;
+        amountCents: number;
+        slot: number | null;
+        blockTime: number | null;
+      }>;
+    };
+
+    const ordered = [...status.txs].sort((a, b) => {
+      const aTime = a.blockTime ?? 0;
+      const bTime = b.blockTime ?? 0;
+      if (aTime !== bTime) return aTime - bTime;
+      const aSlot = a.slot ?? 0;
+      const bSlot = b.slot ?? 0;
+      return aSlot - bSlot;
+    });
+
+    const creditedTxs: Array<{ txSig: string; amountCents: number }> = [];
+    const alreadyCreditedTxs: Array<{ txSig: string; amountCents: number; reason: string }> = [];
+    let totalCreditedCents = 0;
+    for (const tx of ordered) {
+      const settled = (await ctx.runMutation(payments.settleSolanaFundingTx, {
+        userId: args.userId,
+        txSig: tx.txSig,
+        walletAddress: tx.walletAddress,
+        lamports: tx.lamports,
+        slot: tx.slot ?? undefined,
+        blockTime: tx.blockTime ?? undefined,
+      })) as {
+        credited: boolean;
+        txSig: string;
+        amountCents: number;
+        reason?: string;
+      };
+      if (settled.credited) {
+        creditedTxs.push({ txSig: settled.txSig, amountCents: settled.amountCents });
+        totalCreditedCents += settled.amountCents;
+      } else {
+        alreadyCreditedTxs.push({
+          txSig: settled.txSig,
+          amountCents: settled.amountCents,
+          reason: settled.reason ?? "already_credited",
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      chain: "solana",
+      maxTx,
+      detectedCount: ordered.length,
+      creditedCount: creditedTxs.length,
+      alreadyCreditedCount: alreadyCreditedTxs.length,
+      totalCreditedCents,
+      creditedTxs,
+      alreadyCreditedTxs,
+    };
   },
 });
 
