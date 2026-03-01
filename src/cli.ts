@@ -1,98 +1,34 @@
 #!/usr/bin/env node
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { mapNaturalLanguageTask } from "./mapper";
+import { normalizeBaseUrl, parseBudgetUsd } from "./args";
+import { classifyStatusId } from "./commandParsing";
 
 type Config = {
   baseUrl: string;
 };
 
-type Consent = {
-  tosVersion: string;
-  acceptedAt: string;
+type Session = {
+  token: string;
   agentId: string;
-};
-
-type Credentials = {
-  accessToken: string;
   expiresAt: number;
   baseUrl: string;
 };
 
-type EncryptedEnvelope = {
-  encryption: {
-    cipher: "aes-256-gcm";
-    kdf: "scrypt";
-    kdfparams: {
-      n: number;
-      r: number;
-      p: number;
-    };
-    salt: string;
-    iv: string;
-    tag: string;
-  };
-  data: string;
-};
+type ApiEnvelope = Record<string, unknown>;
 
-type LoginResponse = {
-  accessToken: string;
-  expiresAt: number;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type UserRetrieveResponse = {
-  id: string;
-  email: string | null;
-  agentId: string;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type CreateAgentmailResponse = {
-  inboxId: string;
-  email: string;
-  podId: string;
-  clientId: string | null;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type DeleteAgentmailResponse = {
-  ok: boolean;
-  inboxId: string;
-  deletedLocalRecords: number;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type GenericOk = Record<string, unknown>;
-
-const CLI_VERSION = "0.1.0";
-const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
+const CLI_VERSION = "0.2.0";
+const DEFAULT_BASE_URL = "https://enduring-rooster-593.convex.site";
+const CONFIG_DIR = join(homedir(), ".config", "bip");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const SESSION_FILE = join(CONFIG_DIR, "session.json");
 const CONSENT_FILE = join(CONFIG_DIR, "consent.json");
-const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
-const ENCRYPTION_KEY_FILE = join(CONFIG_DIR, ".encryption-key");
-
-const SCRYPT_N = 2 ** 18;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_KEY_LEN = 32;
-const SCRYPT_MAX_MEM = 512 * 1024 * 1024;
-const HCAPTCHA_TEST_RESPONSE_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001";
 const INVITE_CODE_ENV_VAR = "BIP_INVITE_CODE";
+const HCAPTCHA_TEST_RESPONSE_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001";
 
 class ApiError extends Error {
   status: number;
@@ -103,204 +39,159 @@ class ApiError extends Error {
   }
 }
 
-function loadEnvFile(filepath: string): void {
-  if (!existsSync(filepath)) {
-    return;
-  }
-  const source = readFileSync(filepath, "utf-8");
-  const lines = source.split("\n");
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (line.length === 0 || line.startsWith("#")) {
-      continue;
-    }
-    const separator = line.indexOf("=");
-    if (separator <= 0) {
-      continue;
-    }
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
-
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
 }
 
-function atomicWrite(filePath: string, contents: string, mode: number): void {
+function atomicWrite(filePath: string, contents: string): void {
   ensureConfigDir();
-  const tmpPath = `${filePath}.tmp.${process.pid}`;
-  writeFileSync(tmpPath, contents, { encoding: "utf-8", mode });
-  renameSync(tmpPath, filePath);
+  const tmp = `${filePath}.tmp.${process.pid}`;
+  writeFileSync(tmp, contents, { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, filePath);
 }
 
-function readJsonFile<T>(filePath: string): T | null {
-  if (!existsSync(filePath)) {
-    return null;
-  }
+function readJson<T>(path: string): T | null {
+  if (!existsSync(path)) return null;
   try {
-    const value = JSON.parse(readFileSync(filePath, "utf-8")) as T;
-    return value;
+    return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch {
     return null;
+  }
+}
+
+function loadEnvFile(path: string): void {
+  if (!existsSync(path)) return;
+  const lines = readFileSync(path, "utf8").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
   }
 }
 
 function getConfig(): Config {
-  const fromFile = readJsonFile<Config>(CONFIG_FILE);
-  if (fromFile !== null && fromFile.baseUrl.length > 0) {
-    return fromFile;
-  }
-  const envBaseUrl = process.env.CONVEX_SITE_URL;
-  if (typeof envBaseUrl === "string" && envBaseUrl.length > 0) {
-    return { baseUrl: envBaseUrl };
-  }
-  return { baseUrl: "http://127.0.0.1:3211" };
+  const fromFile = readJson<Config>(CONFIG_FILE);
+  if (fromFile?.baseUrl) return fromFile;
+  const fromEnv = process.env.BIP_BASE_URL ?? process.env.CONVEX_SITE_URL;
+  if (fromEnv?.trim()) return { baseUrl: normalizeBaseUrl(fromEnv) };
+  return { baseUrl: DEFAULT_BASE_URL };
 }
 
 function setConfig(config: Config): void {
-  atomicWrite(CONFIG_FILE, JSON.stringify(config, null, 2), 0o600);
+  atomicWrite(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-function getConsent(): Consent | null {
-  return readJsonFile<Consent>(CONSENT_FILE);
+function getConsent(): { agentId: string; acceptedAt: string; tosVersion: string } | null {
+  return readJson<{ agentId: string; acceptedAt: string; tosVersion: string }>(CONSENT_FILE);
 }
 
-function setConsent(consent: Consent): void {
-  atomicWrite(CONSENT_FILE, JSON.stringify(consent, null, 2), 0o600);
-}
-
-function getEncryptionKey(): string {
-  const envKey = process.env.MOONPAY_DEMO_ENCRYPTION_KEY;
-  if (typeof envKey === "string" && envKey.length > 0) {
-    return envKey;
-  }
-  if (existsSync(ENCRYPTION_KEY_FILE)) {
-    return readFileSync(ENCRYPTION_KEY_FILE, "utf-8").trim();
-  }
-  const randomKey = randomBytes(32).toString("hex");
-  atomicWrite(ENCRYPTION_KEY_FILE, randomKey, 0o600);
-  return randomKey;
-}
-
-function encryptPayload(payload: string, encryptionKey: string): EncryptedEnvelope {
-  const salt = randomBytes(32);
-  const iv = randomBytes(12);
-  const derivedKey = scryptSync(encryptionKey, salt, SCRYPT_KEY_LEN, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
-    maxmem: SCRYPT_MAX_MEM,
-  });
-  const cipher = createCipheriv("aes-256-gcm", derivedKey, iv);
-  const encrypted = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
-  return {
-    encryption: {
-      cipher: "aes-256-gcm",
-      kdf: "scrypt",
-      kdfparams: {
-        n: SCRYPT_N,
-        r: SCRYPT_R,
-        p: SCRYPT_P,
-      },
-      salt: salt.toString("base64"),
-      iv: iv.toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"),
-    },
-    data: encrypted.toString("base64"),
+function setConsent(agentId?: string): { agentId: string; acceptedAt: string; tosVersion: string } {
+  const consent = {
+    agentId: agentId ?? getConsent()?.agentId ?? crypto.randomUUID(),
+    acceptedAt: new Date().toISOString(),
+    tosVersion: "1.2-demo",
   };
+  atomicWrite(CONSENT_FILE, JSON.stringify(consent, null, 2));
+  return consent;
 }
 
-function decryptPayload(envelope: EncryptedEnvelope, encryptionKey: string): string {
-  const salt = Buffer.from(envelope.encryption.salt, "base64");
-  const iv = Buffer.from(envelope.encryption.iv, "base64");
-  const tag = Buffer.from(envelope.encryption.tag, "base64");
-  const derivedKey = scryptSync(encryptionKey, salt, SCRYPT_KEY_LEN, {
-    N: envelope.encryption.kdfparams.n,
-    r: envelope.encryption.kdfparams.r,
-    p: envelope.encryption.kdfparams.p,
-    maxmem: SCRYPT_MAX_MEM,
-  });
-  const decipher = createDecipheriv("aes-256-gcm", derivedKey, iv, {
-    authTagLength: 16,
-  });
-  decipher.setAuthTag(tag);
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(envelope.data, "base64")),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
-}
-
-function saveCredentials(credentials: Credentials): void {
-  const key = getEncryptionKey();
-  const encrypted = encryptPayload(JSON.stringify(credentials), key);
-  atomicWrite(CREDENTIALS_FILE, JSON.stringify(encrypted, null, 2), 0o600);
-}
-
-function loadCredentials(): Credentials | null {
-  if (!existsSync(CREDENTIALS_FILE)) {
-    return null;
-  }
-  try {
-    const key = getEncryptionKey();
-    const encrypted = readJsonFile<EncryptedEnvelope>(CREDENTIALS_FILE);
-    if (encrypted === null) {
-      return null;
-    }
-    const raw = decryptPayload(encrypted, key);
-    const parsed = JSON.parse(raw) as Credentials;
-    if (
-      typeof parsed.accessToken !== "string" ||
-      typeof parsed.expiresAt !== "number" ||
-      typeof parsed.baseUrl !== "string"
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function clearCredentials(): void {
-  if (existsSync(CREDENTIALS_FILE)) {
-    unlinkSync(CREDENTIALS_FILE);
-  }
-}
-
-function commonHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-CLI-Version": CLI_VERSION,
-  };
+function getOrCreateAgentId(): string {
+  const session = readJson<Session>(SESSION_FILE);
+  if (session?.agentId) return session.agentId;
   const consent = getConsent();
-  if (consent !== null) {
-    headers["X-Agent-Id"] = consent.agentId;
+  if (consent?.agentId) return consent.agentId;
+  return crypto.randomUUID();
+}
+
+function loadSession(): Session | null {
+  const session = readJson<Session>(SESSION_FILE);
+  if (!session) return null;
+  if (!session.token || !session.agentId || !session.baseUrl || !session.expiresAt) return null;
+  return session;
+}
+
+function saveSession(session: Session): void {
+  atomicWrite(SESSION_FILE, JSON.stringify(session, null, 2));
+}
+
+function clearSession(): void {
+  if (existsSync(SESSION_FILE)) unlinkSync(SESSION_FILE);
+}
+
+function print(data: unknown, asJson = false): void {
+  if (asJson || typeof data === "object") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
   }
-  return headers;
+  console.log(String(data));
+}
+
+function printTaskSummary(input: {
+  intentId?: unknown;
+  runId?: unknown;
+  status?: unknown;
+  artifacts?: unknown;
+  error?: unknown;
+}): void {
+  if (input.error) {
+    console.log(`error: ${String(input.error)}`);
+  }
+  if (input.intentId) console.log(`intent: ${String(input.intentId)}`);
+  if (input.runId) console.log(`run: ${String(input.runId)}`);
+  if (input.status) console.log(`status: ${String(input.status)}`);
+  if (Array.isArray(input.artifacts) && input.artifacts.length > 0) {
+    console.log("artifacts:");
+    for (const artifact of input.artifacts) {
+      console.log(`- ${JSON.stringify(artifact)}`);
+    }
+  }
+}
+
+function maybePrintFundingHelp(payload: Record<string, unknown>): void {
+  const status = String(payload.status ?? payload.error ?? "").toLowerCase();
+  if (!status.includes("fund") && status !== "payment_required") return;
+
+  const address =
+    (typeof payload.depositAddress === "string" && payload.depositAddress) ||
+    (typeof payload.address === "string" && payload.address) ||
+    null;
+  const estimatedSol =
+    (typeof payload.estimatedSol === "number" && payload.estimatedSol) ||
+    (typeof payload.estimatedSolNeeded === "number" && payload.estimatedSolNeeded) ||
+    null;
+
+  console.log("\nfunding required:");
+  if (address) console.log(`deposit address: ${address}`);
+  if (estimatedSol !== null) console.log(`estimated SOL needed: ${estimatedSol}`);
 }
 
 async function postJson<T>(
   baseUrl: string,
   path: string,
   body: unknown,
-  token: string | null,
+  options?: { token?: string; agentId?: string },
 ): Promise<T> {
-  const headers = commonHeaders();
-  if (token !== null) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-CLI-Version": CLI_VERSION,
+  };
+  if (options?.token) headers.Authorization = `Bearer ${options.token}`;
+  if (options?.agentId) headers["X-Agent-Id"] = options.agentId;
+
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
+
   const text = await response.text();
   const data = text.length > 0 ? (JSON.parse(text) as unknown) : null;
   if (!response.ok) {
@@ -308,276 +199,274 @@ async function postJson<T>(
       typeof data === "object" &&
       data !== null &&
       "error" in data &&
-      typeof data.error === "string"
-        ? data.error
-        : `Request failed (${response.status})`;
+      typeof (data as { error?: unknown }).error === "string"
+        ? ((data as { error: string }).error)
+        : `request failed (${response.status})`;
     throw new ApiError(response.status, message);
   }
+
   return data as T;
 }
 
-async function callProtectedTool<T>(path: string, body: unknown): Promise<T> {
-  const credentials = loadCredentials();
-  if (credentials === null) {
-    throw new Error("Not logged in. Run `bun run cli -- login` first.");
+async function callTool(path: string, body: unknown): Promise<ApiEnvelope> {
+  const session = loadSession();
+  if (!session) throw new Error("not logged in. run `bip login` first");
+  if (Date.now() >= session.expiresAt) {
+    clearSession();
+    throw new Error("session expired. run `bip login` again");
   }
-  if (Date.now() >= credentials.expiresAt) {
-    clearCredentials();
-    throw new Error("Session expired. Run `bun run cli -- login` again.");
-  }
-  return await postJson<T>(
-    credentials.baseUrl,
-    path,
-    body,
-    credentials.accessToken,
-  );
+  return postJson<ApiEnvelope>(session.baseUrl, path, body, {
+    token: session.token,
+    agentId: session.agentId,
+  });
 }
 
-function print(value: unknown, asJson: boolean): void {
-  if (asJson || typeof value === "object") {
-    console.log(JSON.stringify(value, null, 2));
+async function taskFlow(taskInput: string, budget: number, asJson: boolean): Promise<void> {
+  const mapped = mapNaturalLanguageTask(taskInput);
+
+  const created = await callTool("/api/tools/create_intent", {
+    task: mapped.normalizedTask,
+    budgetUsd: budget,
+    rail: mapped.rail,
+    tags: mapped.tags,
+  });
+  const intentId = String(created.intentId ?? "");
+  if (!intentId) throw new Error("intent id missing from create_intent response");
+
+  const currentStatus = String(created.status ?? "").toLowerCase();
+  if (currentStatus === "needs_approval") {
+    await callTool("/api/tools/approve_intent", { intentId });
+  }
+
+  const execution = await callTool("/api/tools/execute_intent", { intentId });
+  const runId = execution.runId;
+
+  const statusPayload = runId
+    ? await callTool("/api/tools/run_status", { runId })
+    : await callTool("/api/tools/intent_status", { intentId });
+
+  if (asJson) {
+    print({ mapped, intentId, runId, execution, status: statusPayload }, true);
     return;
   }
-  console.log(value);
-}
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "Unknown error";
-}
+  printTaskSummary({
+    intentId,
+    runId,
+    status: statusPayload.status ?? execution.status,
+    artifacts: (statusPayload.outputJson as unknown) ?? (execution.output as unknown),
+    error: statusPayload.error ?? execution.error,
+  });
 
-function requireConsent(): Consent {
-  const consent = getConsent();
-  if (consent === null) {
-    throw new Error("Consent not accepted. Run `bun run cli -- consent accept` first.");
-  }
-  return consent;
+  maybePrintFundingHelp(execution);
+  maybePrintFundingHelp(statusPayload);
 }
 
 loadEnvFile(join(process.cwd(), ".env.local"));
 
-const program = new Command();
+export function buildProgram(): Command {
+  const program = new Command();
 
-program
-  .name("moonpay-agent-demo")
-  .description("Convex demo CLI for MoonPay-style AI agent authentication flow")
-  .option("--json", "Output JSON");
+  program.name("bip").description("bip cli").option("--json", "output JSON");
 
-program
-  .command("config:set-base-url")
-  .requiredOption("--url <url>", "Convex HTTP actions base URL")
-  .action((args: { url: string }) => {
-    setConfig({ baseUrl: args.url });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print({ baseUrl: args.url }, Boolean(globalOpts.json));
+  program
+    .command("config:set-base-url")
+    .requiredOption("--url <url>", "api base url")
+    .action((args: { url: string }) => {
+      const next = { baseUrl: normalizeBaseUrl(args.url) };
+      setConfig(next);
+      print(next, Boolean(program.opts<{ json?: boolean }>().json));
+    });
+
+  const consent = program.command("consent").description("manage consent metadata");
+  consent.command("accept").action(() => {
+    const result = setConsent();
+    print(result, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+  consent.command("check").action(() => {
+    const existing = getConsent();
+    print(existing ? { accepted: true, ...existing } : { accepted: false }, Boolean(program.opts<{ json?: boolean }>().json));
   });
 
-const consent = program.command("consent").description("Manage local consent and agent identity");
-
-consent.command("accept").action(() => {
-  const existing = getConsent();
-  const next: Consent = {
-    tosVersion: "1.2-demo",
-    acceptedAt: new Date().toISOString(),
-    agentId: existing?.agentId ?? crypto.randomUUID(),
-  };
-  setConsent(next);
-  const globalOpts = program.opts<{ json?: boolean }>();
-  print(next, Boolean(globalOpts.json));
-});
-
-consent.command("check").action(() => {
-  const existing = getConsent();
-  const globalOpts = program.opts<{ json?: boolean }>();
-  if (existing === null) {
-    print({ accepted: false }, Boolean(globalOpts.json));
-    return;
-  }
-  print({ accepted: true, ...existing }, Boolean(globalOpts.json));
-});
-
-program
-  .command("login")
-  .option(
-    "--invite-code <inviteCode>",
-    `Invite code (or set ${INVITE_CODE_ENV_VAR})`,
-  )
-  .option(
-    "--captcha-token <captchaToken>",
-    "hCaptcha response token",
-    HCAPTCHA_TEST_RESPONSE_TOKEN,
-  )
-  .action(async (args: { inviteCode?: string; captchaToken: string }) => {
-    requireConsent();
-    const inviteCode =
-      args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
-    if (inviteCode.length === 0) {
-      throw new Error(
-        `Invite code required. Pass --invite-code or set ${INVITE_CODE_ENV_VAR}.`,
+  program
+    .command("login")
+    .option("--invite-code <inviteCode>", `invite code or ${INVITE_CODE_ENV_VAR}`)
+    .option("--captcha-token <captchaToken>", "hCaptcha response token", HCAPTCHA_TEST_RESPONSE_TOKEN)
+    .option("--base-url <baseUrl>", "override API base url")
+    .action(async (args: { inviteCode?: string; captchaToken: string; baseUrl?: string }) => {
+      const config = getConfig();
+      const baseUrl = args.baseUrl ? normalizeBaseUrl(args.baseUrl) : config.baseUrl;
+      const inviteCode = args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
+      if (!inviteCode) {
+        throw new Error(`invite code required. pass --invite-code or set ${INVITE_CODE_ENV_VAR}`);
+      }
+      const agentId = getOrCreateAgentId();
+      const result = await postJson<{ accessToken: string; expiresAt: number }>(
+        baseUrl,
+        "/auth/login",
+        { captchaToken: args.captchaToken, inviteCode },
+        { agentId },
       );
+
+      saveSession({
+        token: result.accessToken,
+        agentId,
+        expiresAt: result.expiresAt * 1000,
+        baseUrl,
+      });
+      setConfig({ baseUrl });
+
+      const asJson = Boolean(program.opts<{ json?: boolean }>().json);
+      if (asJson) {
+        print({ ok: true, agentId, expiresAt: new Date(result.expiresAt * 1000).toISOString(), baseUrl }, true);
+      } else {
+        console.log("logged in");
+        console.log(`agent: ${agentId}`);
+        console.log(`base: ${baseUrl}`);
+      }
+    });
+
+  program.command("logout").action(() => {
+    clearSession();
+    print({ ok: true }, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("wallet").description("show wallet summary").action(async () => {
+    const data = await callTool("/api/tools/wallet_balance", { chain: "solana" });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  const fund = program.command("fund").description("funding commands");
+  fund.command("sync").action(async () => {
+    const wallet = await callTool("/api/tools/wallet_balance", { chain: "solana" });
+    const asJson = Boolean(program.opts<{ json?: boolean }>().json);
+    if (asJson) {
+      print(wallet, true);
+      return;
     }
-    const baseUrl = getConfig().baseUrl;
-    const result = await postJson<LoginResponse>(
-      baseUrl,
-      "/auth/login",
-      {
-        captchaToken: args.captchaToken,
-        inviteCode,
-      },
-      null,
-    );
-    saveCredentials({
-      accessToken: result.accessToken,
-      expiresAt: result.expiresAt * 1000,
-      baseUrl,
+    console.log("funding sync complete");
+    print(wallet, true);
+  });
+
+  program
+    .command("task")
+    .argument("<prompt>", "natural language task")
+    .option("--budget <usd>", "budget in USD", "5")
+    .action(async (prompt: string, args: { budget: string }) => {
+      await taskFlow(prompt, parseBudgetUsd(args.budget), Boolean(program.opts<{ json?: boolean }>().json));
     });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(
-      {
-        ok: true,
-        expiresAt: new Date(result.expiresAt * 1000).toISOString(),
-        maxApiCalls: result.maxApiCalls,
-        remainingApiCalls: result.remainingApiCalls,
-      },
-      Boolean(globalOpts.json),
-    );
-  });
 
-program.command("logout").action(async () => {
-  const credentials = loadCredentials();
-  if (credentials !== null) {
-    await postJson<{ ok: boolean }>(credentials.baseUrl, "/auth/logout", {}, credentials.accessToken);
-  }
-  clearCredentials();
-  const globalOpts = program.opts<{ json?: boolean }>();
-  print({ ok: true }, Boolean(globalOpts.json));
-});
+  program
+    .command("status")
+    .argument("<id>", "intentId or runId")
+    .action(async (id: string) => {
+      const looksLikeRun = classifyStatusId(id) === "run";
+      const payload = looksLikeRun
+        ? await callTool("/api/tools/run_status", { runId: id })
+        : await callTool("/api/tools/intent_status", { intentId: id });
 
-const user = program.command("user").description("User commands");
-
-user.command("retrieve").action(async () => {
-  const data = await callProtectedTool<UserRetrieveResponse>("/api/tools/user_retrieve", {});
-  const globalOpts = program.opts<{ json?: boolean }>();
-  print(data, Boolean(globalOpts.json));
-});
-
-program
-  .command("create_agentmail")
-  .requiredOption("--email <email>", "Requested AgentMail inbox email")
-  .action(async (args: { email: string }) => {
-    const data = await callProtectedTool<CreateAgentmailResponse>(
-      "/api/tools/create_agentmail",
-      {
-        email: args.email,
-      },
-    );
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("delete_agentmail")
-  .requiredOption("--inbox-id <inboxId>", "AgentMail inbox id (typically the inbox email)")
-  .action(async (args: { inboxId: string }) => {
-    const data = await callProtectedTool<DeleteAgentmailResponse>(
-      "/api/tools/delete_agentmail",
-      {
-        inboxId: args.inboxId,
-      },
-    );
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("wallet_register")
-  .requiredOption("--chain <chain>", "Chain, e.g. solana")
-  .requiredOption("--address <address>", "Wallet address")
-  .option("--label <label>", "Optional label")
-  .action(async (args: { chain: string; address: string; label?: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/register_wallet", {
-      chain: args.chain,
-      address: args.address,
-      label: args.label,
+      const asJson = Boolean(program.opts<{ json?: boolean }>().json);
+      if (asJson) {
+        print(payload, true);
+        return;
+      }
+      printTaskSummary({
+        intentId: looksLikeRun ? undefined : id,
+        runId: looksLikeRun ? id : (payload.intent as Record<string, unknown> | undefined)?.runId,
+        status: payload.status ?? (payload.intent as Record<string, unknown> | undefined)?.status,
+        artifacts: payload.outputJson,
+        error: payload.error,
+      });
+      maybePrintFundingHelp(payload);
     });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
 
-program
-  .command("wallet_balance")
-  .option("--chain <chain>", "Chain, default solana", "solana")
-  .action(async (args: { chain: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/wallet_balance", {
-      chain: args.chain,
+  program
+    .command("resume")
+    .argument("<intentId>", "intent id")
+    .action(async (intentId: string) => {
+      const status = await callTool("/api/tools/intent_status", { intentId });
+      const intent = status.intent as Record<string, unknown> | undefined;
+      const current = String(intent?.status ?? "");
+
+      if (current === "needs_approval") {
+        await callTool("/api/tools/approve_intent", { intentId });
+      }
+      if (["confirmed", "ok"].includes(current)) {
+        print({ intentId, status: current, message: "already completed" }, Boolean(program.opts<{ json?: boolean }>().json));
+        return;
+      }
+
+      const execution = await callTool("/api/tools/execute_intent", { intentId });
+      print(execution, Boolean(program.opts<{ json?: boolean }>().json));
+      maybePrintFundingHelp(execution);
     });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
+
+  // Backward-compatible command aliases
+  const user = program.command("user");
+  user.command("retrieve").action(async () => {
+    const data = await callTool("/api/tools/user_retrieve", {});
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
   });
 
-program
-  .command("intent_create")
-  .requiredOption("--task <task>", "Task description")
-  .option("--budget-usd <budgetUsd>", "Budget in USD", "5")
-  .option("--rail <rail>", "auto|x402|bitrefill|card", "auto")
-  .action(async (args: { task: string; budgetUsd: string; rail: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/create_intent", {
+  program.command("create_agentmail").requiredOption("--email <email>").action(async (args: { email: string }) => {
+    const data = await callTool("/api/tools/create_agentmail", { email: args.email });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("delete_agentmail").requiredOption("--inbox-id <inboxId>").action(async (args: { inboxId: string }) => {
+    const data = await callTool("/api/tools/delete_agentmail", { inboxId: args.inboxId });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("wallet_register").requiredOption("--chain <chain>").requiredOption("--address <address>").option("--label <label>").action(async (args: { chain: string; address: string; label?: string }) => {
+    const data = await callTool("/api/tools/register_wallet", args);
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("wallet_balance").option("--chain <chain>", "chain", "solana").action(async (args: { chain: string }) => {
+    const data = await callTool("/api/tools/wallet_balance", { chain: args.chain });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("intent_create").requiredOption("--task <task>").option("--budget-usd <budgetUsd>", "budget in usd", "5").option("--rail <rail>", "rail", "auto").action(async (args: { task: string; budgetUsd: string; rail: string }) => {
+    const data = await callTool("/api/tools/create_intent", {
       task: args.task,
-      budgetUsd: Number(args.budgetUsd),
+      budgetUsd: parseBudgetUsd(args.budgetUsd),
       rail: args.rail,
     });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
   });
 
-program
-  .command("intent_approve")
-  .requiredOption("--intent-id <intentId>", "Intent id")
-  .action(async (args: { intentId: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/approve_intent", {
-      intentId: args.intentId,
+  program.command("intent_approve").requiredOption("--intent-id <intentId>").action(async (args: { intentId: string }) => {
+    const data = await callTool("/api/tools/approve_intent", { intentId: args.intentId });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("intent_execute").requiredOption("--intent-id <intentId>").action(async (args: { intentId: string }) => {
+    const data = await callTool("/api/tools/execute_intent", { intentId: args.intentId });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+    maybePrintFundingHelp(data);
+  });
+
+  program.command("intent_status").requiredOption("--intent-id <intentId>").action(async (args: { intentId: string }) => {
+    const data = await callTool("/api/tools/intent_status", { intentId: args.intentId });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  program.command("run_status").requiredOption("--run-id <runId>").action(async (args: { runId: string }) => {
+    const data = await callTool("/api/tools/run_status", { runId: args.runId });
+    print(data, Boolean(program.opts<{ json?: boolean }>().json));
+  });
+
+  return program;
+}
+
+if (import.meta.main) {
+  buildProgram()
+    .parseAsync(process.argv)
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "unknown error";
+      console.error(message);
+      process.exit(1);
     });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("intent_execute")
-  .requiredOption("--intent-id <intentId>", "Intent id")
-  .action(async (args: { intentId: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/execute_intent", {
-      intentId: args.intentId,
-    });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("run_status")
-  .requiredOption("--run-id <runId>", "Run id")
-  .action(async (args: { runId: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/run_status", {
-      runId: args.runId,
-    });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("intent_status")
-  .requiredOption("--intent-id <intentId>", "Intent id")
-  .action(async (args: { intentId: string }) => {
-    const data = await callProtectedTool<GenericOk>("/api/tools/intent_status", {
-      intentId: args.intentId,
-    });
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program.parseAsync().catch((error: unknown) => {
-  const message = toErrorMessage(error);
-  console.error(message);
-  process.exit(1);
-});
+}

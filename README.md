@@ -43,13 +43,15 @@ curl -fsSL https://exciting-stingray-685.convex.site/cli/install.sh | sh
 Then use the installed `bip` command:
 
 ```bash
-bip config:set-base-url --url https://exciting-stingray-685.convex.site
-bip consent accept
 bip login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
-bip user retrieve
-bip create_agentmail --email openclaw-demo@yourdomain.com
-bip delete_agentmail --inbox-id openclaw-demo@yourdomain.com
+bip wallet
+bip fund sync
+bip task "get me an openrouter api key" --budget 8
+bip status <intentId-or-runId>
+bip resume <intentId>
 ```
+
+You can still use low-level commands (`intent_status`, `run_status`, `wallet_balance`) for debugging.
 
 Manifest endpoint:
 
@@ -129,21 +131,25 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 
 ## Commands
 
-- `consent accept`
-- `consent check`
-- `config:set-base-url --url <url>`
-- `login --invite-code <code> [--captcha-token <token>]`
-- `user retrieve`
-- `create_agentmail --email <email>`
-- `delete_agentmail --inbox-id <inboxId>`
-- `wallet_register --chain <chain> --address <address> [--label <label>]`
-- `wallet_balance [--chain <chain>]`
-- `intent_create --task <task> [--budget-usd <usd>] [--rail <rail>]`
-- `intent_approve --intent-id <intentId>`
-- `intent_execute --intent-id <intentId>`
-- `intent_status --intent-id <intentId>`
-- `run_status --run-id <runId>`
-- `logout`
+Primary UX:
+
+- `bip login [--invite-code <code>] [--captcha-token <token>] [--base-url <url>]`
+- `bip wallet`
+- `bip fund sync`
+- `bip task "<natural language>" [--budget <usd>]`
+- `bip status <intentId|runId>`
+- `bip resume <intentId>`
+- `bip logout`
+
+Config:
+
+- `bip config:set-base-url --url <url>`
+
+Compatibility commands (still supported):
+
+- `bip wallet_balance [--chain <chain>]`
+- `bip intent_status --intent-id <intentId>`
+- `bip run_status --run-id <runId>`
 
 ### Payments execution env
 
