@@ -36,19 +36,6 @@ export default defineSchema({
     ])
     .index("by_action_and_ip_and_created_at", ["action", "ip", "createdAt"]),
 
-  captchaChallenges: defineTable({
-    challengeId: v.string(),
-    agentId: v.string(),
-    inviteCode: v.string(),
-    ip: v.string(),
-    status: v.union(v.literal("pending"), v.literal("completed")),
-    loginResult: v.union(v.string(), v.null()),
-    expiresAt: v.number(),
-    createdAt: v.number(),
-  })
-    .index("by_challenge_id", ["challengeId"])
-    .index("by_agent_id_and_created_at", ["agentId", "createdAt"]),
-
   agentmailInboxes: defineTable({
     userId: v.id("users"),
     requestedEmail: v.string(),
@@ -60,4 +47,121 @@ export default defineSchema({
     .index("by_user_id_and_created_at", ["userId", "createdAt"])
     .index("by_user_id_and_inbox_id", ["userId", "inboxId"])
     .index("by_user_id_and_requested_email", ["userId", "requestedEmail"]),
+
+  agentWallets: defineTable({
+    userId: v.id("users"),
+    chain: v.string(),
+    address: v.string(),
+    label: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+  })
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_user_id_and_chain", ["userId", "chain"]),
+
+  agentAccounts: defineTable({
+    userId: v.id("users"),
+    currency: v.string(),
+    availableCents: v.number(),
+    heldCents: v.number(),
+    status: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_id", ["userId"]),
+
+  ledgerEntries: defineTable({
+    entryId: v.string(),
+    userId: v.id("users"),
+    intentId: v.optional(v.string()),
+    type: v.string(),
+    amountCents: v.number(),
+    balanceAfterAvailableCents: v.number(),
+    balanceAfterHeldCents: v.number(),
+    refType: v.optional(v.string()),
+    refId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_entry_id", ["entryId"])
+    .index("by_intent_id_and_created_at", ["intentId", "createdAt"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_ref_type_and_ref_id", ["refType", "refId"]),
+
+  processedFundingTxs: defineTable({
+    chain: v.string(),
+    txSig: v.string(),
+    userId: v.id("users"),
+    walletAddress: v.string(),
+    lamports: v.number(),
+    amountCents: v.number(),
+    slot: v.optional(v.number()),
+    blockTime: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_chain_and_tx_sig", ["chain", "txSig"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
+  paymentIntents: defineTable({
+    userId: v.id("users"),
+    intentId: v.string(),
+    offeringId: v.optional(v.union(v.string(), v.null())),
+    intentType: v.optional(v.union(v.string(), v.null())),
+    provider: v.optional(v.union(v.string(), v.null())),
+    metadataJson: v.optional(v.union(v.string(), v.null())),
+    task: v.string(),
+    budgetUsd: v.number(),
+    rail: v.string(),
+    status: v.string(),
+    approvalRequired: v.boolean(),
+    approvedBy: v.union(v.string(), v.null()),
+    runId: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_intent_id", ["intentId"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"]),
+
+  offeringPolicies: defineTable({
+    offeringId: v.string(),
+    intentType: v.string(),
+    providerAllowlist: v.array(v.string()),
+    maxBudgetCentsPerIntent: v.number(),
+    maxBudgetCentsPerDay: v.number(),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_offering_id", ["offeringId"])
+    .index("by_intent_type", ["intentType"]),
+
+  paymentEvents: defineTable({
+    intentId: v.string(),
+    eventType: v.string(),
+    payloadJson: v.string(),
+    createdAt: v.number(),
+  }).index("by_intent_id_and_created_at", ["intentId", "createdAt"]),
+
+  agentSecrets: defineTable({
+    secretRef: v.string(),
+    userId: v.id("users"),
+    intentId: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    secretType: v.string(),
+    secretValue: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_secret_ref", ["secretRef"])
+    .index("by_user_id_and_created_at", ["userId", "createdAt"])
+    .index("by_secret_type_and_created_at", ["secretType", "createdAt"]),
+
+  runs: defineTable({
+    runId: v.string(),
+    intentId: v.string(),
+    userId: v.id("users"),
+    status: v.string(),
+    outputJson: v.union(v.string(), v.null()),
+    error: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_run_id", ["runId"])
+    .index("by_intent_id", ["intentId"]),
 });

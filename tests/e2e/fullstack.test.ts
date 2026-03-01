@@ -20,6 +20,8 @@ const HCAPTCHA_INVALID_TOKEN = "test-captcha-fail";
 const AGENTMAIL_API_KEY = "test-agentmail-api-key";
 const AGENTMAIL_DEFAULT_DOMAIN = "agentmail.to";
 const AGENTMAIL_MAX_ACTIVE_INBOXES = 3;
+const ADMIN_CARD_WRITE_TOKEN = "test-admin-card-write-token";
+const BROWSER_USE_API_KEY = "test-browser-use-api-key";
 const SESSION_API_CALL_LIMIT = 100;
 setDefaultTimeout(120_000);
 
@@ -50,6 +52,12 @@ let mockServer: Bun.Server | null = null;
 let mockBaseUrl = "";
 const trackedHomes: Array<string> = [];
 const mockAgentmailInboxes = new Map<string, AgentmailInbox>();
+const mockBrowserUseTasks = new Map<string, { task: string; statusChecks: number }>();
+const mockSolanaSignaturesByAddress = new Map<
+  string,
+  Array<{ signature: string; slot: number; blockTime: number | null }>
+>();
+const mockSolanaTransactionsBySignature = new Map<string, JsonRecord>();
 
 function commandToString(cmd: Array<string>): string {
   return cmd.map((part) => JSON.stringify(part)).join(" ");
@@ -207,7 +215,7 @@ async function startLocalConvexDev(): Promise<void> {
     stderr: "pipe",
   });
 
-  await waitForHttpReady(`${CONVEX_SITE_URL}/cli/manifest.json`, 45_000);
+  await waitForHttpReady(`${CONVEX_SITE_URL}/auth/login`, 45_000);
 }
 
 function stopLocalConvexDev(): void {
@@ -230,14 +238,65 @@ function createAgentmailInboxId(username: string, domain: string | null): string
   return `${username}@${domain ?? AGENTMAIL_DEFAULT_DOMAIN}`;
 }
 
+function seedMockSolanaInboundTxs(
+  walletAddress: string,
+  txs: Array<{
+    txSig: string;
+    lamports: number;
+    slot: number;
+    blockTime: number;
+  }>,
+): void {
+  mockSolanaSignaturesByAddress.set(
+    walletAddress,
+    txs.map((tx) => ({
+      signature: tx.txSig,
+      slot: tx.slot,
+      blockTime: tx.blockTime,
+    })),
+  );
+  for (const tx of txs) {
+    const preBalance = 1_000_000_000;
+    mockSolanaTransactionsBySignature.set(tx.txSig, {
+      slot: tx.slot,
+      blockTime: tx.blockTime,
+      meta: {
+        err: null,
+        preBalances: [preBalance, 9_000_000_000],
+        postBalances: [preBalance + tx.lamports, 9_000_000_000 - tx.lamports],
+      },
+      transaction: {
+        message: {
+          accountKeys: [
+            {
+              pubkey: walletAddress,
+              signer: false,
+              writable: true,
+              source: "transaction",
+            },
+            {
+              pubkey: "11111111111111111111111111111111",
+              signer: true,
+              writable: true,
+              source: "transaction",
+            },
+          ],
+        },
+        signatures: [tx.txSig],
+      },
+    });
+  }
+}
+
 function startMockProviders(): void {
   if (mockServer !== null) {
     return;
   }
   mockAgentmailInboxes.clear();
-  mockServer = Bun.serve({
-    port: 0,
-    fetch: async (request) => {
+  mockBrowserUseTasks.clear();
+  mockSolanaSignaturesByAddress.clear();
+  mockSolanaTransactionsBySignature.clear();
+  const fetchHandler = async (request: Request) => {
       const url = new URL(request.url);
 
       if (request.method === "POST" && url.pathname === "/hcaptcha/siteverify") {
@@ -376,12 +435,150 @@ function startMockProviders(): void {
         });
       }
 
+      if (request.method === "POST" && url.pathname === "/api/v2/tasks") {
+        const authHeader = request.headers.get("authorization");
+        const keyHeader = request.headers.get("x-browser-use-api-key");
+        if (
+          authHeader !== `Bearer ${BROWSER_USE_API_KEY}` ||
+          keyHeader !== BROWSER_USE_API_KEY
+        ) {
+          return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const body = (await request.json()) as { task?: unknown };
+        if (typeof body.task !== "string" || body.task.trim().length === 0) {
+          return new Response(JSON.stringify({ error: "task is required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const id = `bu-task-${crypto.randomUUID()}`;
+        mockBrowserUseTasks.set(id, { task: body.task, statusChecks: 0 });
+        return new Response(JSON.stringify({ id }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (request.method === "GET" && /\/api\/v2\/tasks\/[^/]+\/status$/.test(url.pathname)) {
+        const authHeader = request.headers.get("authorization");
+        const keyHeader = request.headers.get("x-browser-use-api-key");
+        if (
+          authHeader !== `Bearer ${BROWSER_USE_API_KEY}` ||
+          keyHeader !== BROWSER_USE_API_KEY
+        ) {
+          return new Response(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const taskId = url.pathname.split("/")[4] ?? "";
+        const found = mockBrowserUseTasks.get(taskId);
+        if (found === undefined) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        found.statusChecks += 1;
+        mockBrowserUseTasks.set(taskId, found);
+        const isApiKeyPurchaseTask = found.task.includes("[intent=api_key_purchase]");
+        const output = isApiKeyPurchaseTask
+          ? "API key created successfully. key=sk-live-test-key-1234567890 proof captured."
+          : "Gift card purchase completed successfully";
+        return new Response(
+          JSON.stringify({
+            status: "finished",
+            output,
+            taskEcho: found.task,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      if (request.method === "POST" && url.pathname === "/solana/rpc") {
+        const body = (await request.json()) as {
+          id?: unknown;
+          method?: unknown;
+          params?: unknown;
+        };
+        const id = body.id ?? 1;
+        const method = typeof body.method === "string" ? body.method : "";
+        const params = Array.isArray(body.params) ? body.params : [];
+        if (method === "getSignaturesForAddress") {
+          const address = typeof params[0] === "string" ? params[0] : "";
+          const rows = mockSolanaSignaturesByAddress.get(address) ?? [];
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: rows.map((row) => ({
+                signature: row.signature,
+                slot: row.slot,
+                err: null,
+                memo: null,
+                blockTime: row.blockTime,
+                confirmationStatus: "confirmed",
+              })),
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (method === "getTransaction") {
+          const txSig = typeof params[0] === "string" ? params[0] : "";
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: mockSolanaTransactionsBySignature.get(txSig) ?? null,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: "Method not found" },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
       return new Response(JSON.stringify({ error: "Not found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
       });
-    },
-  });
+    };
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidatePort = 3300 + Math.floor(Math.random() * 2000);
+    try {
+      mockServer = Bun.serve({
+        port: candidatePort,
+        fetch: fetchHandler,
+      });
+      break;
+    } catch {
+      // retry different local port
+    }
+  }
+  if (mockServer === null) {
+    throw new Error("Failed to start mock provider server on local ephemeral ports");
+  }
   mockBaseUrl = `http://127.0.0.1:${mockServer.port}`;
 }
 
@@ -391,9 +588,17 @@ function stopMockProviders(): void {
     mockServer = null;
   }
   mockAgentmailInboxes.clear();
+  mockBrowserUseTasks.clear();
+  mockSolanaSignaturesByAddress.clear();
+  mockSolanaTransactionsBySignature.clear();
 }
 
 async function configureConvexTestEnv(): Promise<void> {
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "AUTH_BYPASS", "false"],
+    20,
+    500,
+  );
   await runCommandWithRetry(
     ["bunx", "convex", "env", "set", "HCAPTCHA_SECRET_KEY", HCAPTCHA_SECRET],
     20,
@@ -427,6 +632,31 @@ async function configureConvexTestEnv(): Promise<void> {
     20,
     500,
   );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "ADMIN_CARD_WRITE_TOKEN", ADMIN_CARD_WRITE_TOKEN],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "BROWSER_USE_API_BASE", mockBaseUrl],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "BROWSER_USE_API_KEY", BROWSER_USE_API_KEY],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "SOLANA_RPC_URL", `${mockBaseUrl}/solana/rpc`],
+    20,
+    500,
+  );
+  await runCommandWithRetry(
+    ["bunx", "convex", "env", "set", "SOLANA_FUNDING_USD_PER_SOL", "100"],
+    20,
+    500,
+  );
 }
 
 async function postJson(
@@ -435,6 +665,7 @@ async function postJson(
   options?: {
     token?: string;
     agentId?: string;
+    headers?: Record<string, string>;
   },
 ): Promise<{ status: number; json: JsonRecord }> {
   const headers: Record<string, string> = {
@@ -445,6 +676,9 @@ async function postJson(
   }
   if (options?.agentId !== undefined) {
     headers["X-Agent-Id"] = options.agentId;
+  }
+  if (options?.headers !== undefined) {
+    Object.assign(headers, options.headers);
   }
   const response = await fetch(`${CONVEX_SITE_URL}${path}`, {
     method: "POST",
@@ -460,23 +694,16 @@ async function postJson(
 }
 
 async function login(agentId: string): Promise<LoginSuccess> {
-  const challengeResp = await postJson(
-    "/auth/captcha-challenge",
-    { inviteCode: INVITE_CODE },
+  const response = await postJson(
+    "/auth/login",
+    {
+      captchaToken: HCAPTCHA_VALID_TOKEN,
+      inviteCode: INVITE_CODE,
+    },
     { agentId },
   );
-  expect(challengeResp.status).toBe(200);
-  const challengeId = challengeResp.json.challengeId as string;
-
-  const callbackResp = await postJson("/auth/captcha-callback", {
-    challengeId,
-    captchaToken: HCAPTCHA_VALID_TOKEN,
-  });
-  expect(callbackResp.status).toBe(200);
-
-  const pollResp = await postJson("/auth/captcha-poll", { challengeId });
-  expect(pollResp.status).toBe(200);
-  return pollResp.json as unknown as LoginSuccess;
+  expect(response.status).toBe(200);
+  return response.json as unknown as LoginSuccess;
 }
 
 async function runCli(
@@ -516,12 +743,10 @@ describe("Auth + Tool API", () => {
     const manifest = (await manifestResponse.json()) as {
       installUrl?: unknown;
       cliUrl?: unknown;
-      captchaUrl?: unknown;
       quickInstall?: unknown;
     };
     expect(manifest.installUrl).toBe(`${CONVEX_SITE_URL}/cli/install.sh`);
     expect(manifest.cliUrl).toBe(`${CONVEX_SITE_URL}/cli/bip.mjs`);
-    expect(manifest.captchaUrl).toBe(`${CONVEX_SITE_URL}/cli/hcaptcha`);
     expect(manifest.quickInstall).toBe(
       `curl -fsSL ${CONVEX_SITE_URL}/cli/install.sh | sh`,
     );
@@ -535,20 +760,49 @@ describe("Auth + Tool API", () => {
     const publicCliResponse = await fetch(`${CONVEX_SITE_URL}/cli/bip.mjs`);
     expect(publicCliResponse.status).toBe(200);
     const publicCliSource = await publicCliResponse.text();
-    expect(publicCliSource).toContain(`const CLI_VERSION = "0.1.0-public";`);
     expect(publicCliSource).toContain(
       `const DEFAULT_BASE_URL = "${CONVEX_SITE_URL}";`,
     );
     expect(publicCliSource).toContain("create_agentmail");
     expect(publicCliSource).toContain("delete_agentmail");
-    expect(publicCliSource).toContain("/auth/captcha-challenge");
-    expect(publicCliSource).not.toContain("10000000-aaaa-bbbb-cccc-000000000001");
+  });
 
-    const captchaPageResponse = await fetch(`${CONVEX_SITE_URL}/cli/hcaptcha`);
-    expect(captchaPageResponse.status).toBe(200);
-    const captchaPage = await captchaPageResponse.text();
-    expect(captchaPage).toContain('id="hcaptcha-container"');
-    expect(captchaPage).toContain(`sitekey: "${HCAPTCHA_SITE_KEY}"`);
+  test("rejects login without invite code", async () => {
+    const response = await postJson(
+      "/auth/login",
+      {
+        captchaToken: HCAPTCHA_VALID_TOKEN,
+      },
+      { agentId: `agent-${crypto.randomUUID()}` },
+    );
+    expect(response.status).toBe(400);
+    expect(response.json.error).toBe("captchaToken and inviteCode are required");
+  });
+
+  test("rejects login with invalid invite code", async () => {
+    const response = await postJson(
+      "/auth/login",
+      {
+        captchaToken: HCAPTCHA_VALID_TOKEN,
+        inviteCode: "bad-invite",
+      },
+      { agentId: `agent-${crypto.randomUUID()}` },
+    );
+    expect(response.status).toBe(403);
+    expect(response.json.error).toBe("Invalid invite code");
+  });
+
+  test("rejects login with invalid hcaptcha token", async () => {
+    const response = await postJson(
+      "/auth/login",
+      {
+        captchaToken: HCAPTCHA_INVALID_TOKEN,
+        inviteCode: INVITE_CODE,
+      },
+      { agentId: `agent-${crypto.randomUUID()}` },
+    );
+    expect(response.status).toBe(401);
+    expect(response.json.error).toBe("hCaptcha verification failed");
   });
 
   test("issues 24h session token and enforces per-session call limit", async () => {
@@ -653,88 +907,6 @@ describe("Auth + Tool API", () => {
     expect(cleanupFourth.json.ok).toBe(true);
   });
 
-  test("device flow: create challenge, callback, poll", async () => {
-    const agentId = `agent-${crypto.randomUUID()}`;
-
-    // Create challenge
-    const challengeResp = await postJson(
-      "/auth/captcha-challenge",
-      { inviteCode: INVITE_CODE },
-      { agentId },
-    );
-    expect(challengeResp.status).toBe(200);
-    expect(typeof challengeResp.json.challengeId).toBe("string");
-    expect(typeof challengeResp.json.captchaUrl).toBe("string");
-    const challengeId = challengeResp.json.challengeId as string;
-
-    // Poll should return pending
-    const pendingResp = await postJson("/auth/captcha-poll", { challengeId });
-    expect(pendingResp.status).toBe(202);
-    expect(pendingResp.json.status).toBe("pending");
-
-    // Callback with invalid captcha should fail
-    const badCallback = await postJson("/auth/captcha-callback", {
-      challengeId,
-      captchaToken: HCAPTCHA_INVALID_TOKEN,
-    });
-    expect(badCallback.status).toBe(401);
-
-    // Callback with valid captcha should succeed
-    const goodCallback = await postJson("/auth/captcha-callback", {
-      challengeId,
-      captchaToken: HCAPTCHA_VALID_TOKEN,
-    });
-    expect(goodCallback.status).toBe(200);
-    expect(goodCallback.json.ok).toBe(true);
-
-    // Poll should return completed with access token
-    const completedResp = await postJson("/auth/captcha-poll", { challengeId });
-    expect(completedResp.status).toBe(200);
-    expect(completedResp.json.status).toBe("completed");
-    expect(typeof completedResp.json.accessToken).toBe("string");
-    expect(typeof completedResp.json.expiresAt).toBe("number");
-    expect(completedResp.json.maxApiCalls).toBe(SESSION_API_CALL_LIMIT);
-
-    // Token should work for API calls
-    const userResp = await postJson(
-      "/api/tools/user_retrieve",
-      {},
-      { token: completedResp.json.accessToken as string },
-    );
-    expect(userResp.status).toBe(200);
-    expect(userResp.json.agentId).toBe(agentId.toLowerCase());
-  });
-
-  test("device flow: rejects challenge with invalid invite code", async () => {
-    const resp = await postJson(
-      "/auth/captcha-challenge",
-      { inviteCode: "bad-code" },
-      { agentId: `agent-${crypto.randomUUID()}` },
-    );
-    expect(resp.status).toBe(403);
-  });
-
-  test("device flow: rejects callback for already-completed challenge", async () => {
-    const agentId = `agent-${crypto.randomUUID()}`;
-    const challengeResp = await postJson(
-      "/auth/captcha-challenge",
-      { inviteCode: INVITE_CODE },
-      { agentId },
-    );
-    const challengeId = challengeResp.json.challengeId as string;
-
-    await postJson("/auth/captcha-callback", {
-      challengeId,
-      captchaToken: HCAPTCHA_VALID_TOKEN,
-    });
-
-    const secondCallback = await postJson("/auth/captcha-callback", {
-      challengeId,
-      captchaToken: HCAPTCHA_VALID_TOKEN,
-    });
-    expect(secondCallback.status).toBe(400);
-  });
-
   test("logout revokes access token", async () => {
     const auth = await login(`agent-${crypto.randomUUID()}`);
     const beforeLogout = await postJson(
@@ -760,6 +932,606 @@ describe("Auth + Tool API", () => {
     expect(afterLogout.status).toBe(401);
     expect(afterLogout.json.error).toBe("Invalid or expired access token");
   });
+
+  test("returns phase-1 offering registry", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const response = await postJson(
+      "/api/tools/offering_list",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(response.status).toBe(200);
+    const offerings = response.json.offerings as Array<Record<string, unknown>>;
+    expect(Array.isArray(offerings)).toBe(true);
+    expect(offerings.length).toBeGreaterThanOrEqual(3);
+    const ids = offerings.map((item) => `${item.offeringId ?? ""}`);
+    expect(ids).toContain("giftcard.bitrefill.buy");
+    expect(ids).toContain("apikey.provider.buy");
+    expect(ids).toContain("account.bootstrap");
+  });
+
+  test("supports treasury_card_add/list with masked metadata only", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const addResponse = await postJson(
+      "/api/tools/treasury_card_add",
+      {
+        label: "Ops Primary",
+        pan: "4111111111111111",
+        expMonth: "12",
+        expYear: "2030",
+        cvv: "123",
+        nameOnCard: "Treasury User",
+        billingZip: "94107",
+      },
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(addResponse.status).toBe(200);
+    expect(addResponse.json.ok).toBe(true);
+    expect(`${addResponse.json.cardRef ?? ""}`).toContain("card_ops_primary_");
+
+    const listResponse = await postJson(
+      "/api/tools/treasury_card_list",
+      {},
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(listResponse.status).toBe(200);
+    const cards = listResponse.json.cards as Array<Record<string, unknown>>;
+    expect(Array.isArray(cards)).toBe(true);
+    const created = cards.find((card) => card.cardRef === addResponse.json.cardRef);
+    expect(created).toBeDefined();
+    if (created === undefined) {
+      throw new Error("Expected created treasury card metadata");
+    }
+    expect(created.label).toBe("Ops Primary");
+    expect(created.last4).toBe("1111");
+    expect(created.exp).toBe("12/2030");
+    expect(created.status).toBe("active");
+    expect(created.pan).toBeUndefined();
+    expect(created.cvv).toBeUndefined();
+  });
+
+  test("enforces create_intent offering policy pass/fail", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const allowed = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy a gift card and return the code",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(allowed.status).toBe(200);
+    expect(typeof allowed.json.intentId).toBe("string");
+
+    const disallowedProvider = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy a gift card and return the code",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "not-allowed-provider",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(disallowedProvider.status).toBe(403);
+    expect(disallowedProvider.json.code).toBe("offering_not_found");
+
+    const overBudget = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy api key",
+        budgetUsd: 100,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(overBudget.status).toBe(403);
+    expect(overBudget.json.code).toBe("budget_cap_exceeded_per_intent");
+  });
+
+  test("accepts phase-1 api_key_purchase policy for elevenlabs", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          targetProduct: "starter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(200);
+    expect(typeof createIntent.json.intentId).toBe("string");
+  });
+
+  test("rejects api_key_purchase when required metadata is missing", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(400);
+    expect(createIntent.json.error).toBe("invalid_api_key_purchase_metadata");
+  });
+
+  test("execute api_key_purchase dryRun returns action_required plan", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const createIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          dryRun: true,
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(createIntent.status).toBe(200);
+    const intentId = `${createIntent.json.intentId ?? ""}`;
+    const beforeTaskCount = mockBrowserUseTasks.size;
+    const execute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(execute.status).toBe(200);
+    expect(execute.json.status).toBe("action_required");
+    expect(typeof execute.json.reason).toBe("string");
+    expect(typeof execute.json.nextAction).toBe("string");
+    expect(Object.prototype.hasOwnProperty.call(execute.json, "handoffUrl")).toBe(true);
+    expect(mockBrowserUseTasks.size).toBe(beforeTaskCount);
+  });
+
+  test("api_key_purchase success/action_required responses include required contract fields", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const successIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          targetProduct: "starter",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(successIntent.status).toBe(200);
+    const successIntentId = `${successIntent.json.intentId ?? ""}`;
+    const successExecute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId: successIntentId },
+      { token: auth.accessToken },
+    );
+    expect(successExecute.status).toBe(200);
+    expect(successExecute.json.status).toBe("ok");
+    expect(typeof successExecute.json.traceId).toBe("string");
+    expect(successExecute.json.provider).toBe("elevenlabs");
+    expect(typeof successExecute.json.proofRef).toBe("string");
+    const credential = successExecute.json.credential as Record<string, unknown>;
+    expect(typeof credential.secretRef).toBe("string");
+
+    const dryRunIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy elevenlabs api key",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "elevenlabs",
+        metadata: {
+          provider: "elevenlabs",
+          accountEmailMode: "existing",
+          dryRun: true,
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(dryRunIntent.status).toBe(200);
+    const dryRunIntentId = `${dryRunIntent.json.intentId ?? ""}`;
+    const dryRunExecute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId: dryRunIntentId },
+      { token: auth.accessToken },
+    );
+    expect(dryRunExecute.status).toBe(200);
+    expect(dryRunExecute.json.status).toBe("action_required");
+    expect(typeof dryRunExecute.json.reason).toBe("string");
+    expect(typeof dryRunExecute.json.nextAction).toBe("string");
+    expect(Object.prototype.hasOwnProperty.call(dryRunExecute.json, "handoffUrl")).toBe(true);
+  });
+
+  test("defaults giftcard metadata.cardRef and executes with treasury card artifact", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const addCard = await postJson(
+      "/api/tools/treasury_card_add",
+      {
+        label: "Default Treasury",
+        pan: "4242424242424242",
+        expMonth: "08",
+        expYear: "2031",
+        cvv: "999",
+        nameOnCard: "Default Treasury",
+      },
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(addCard.status).toBe(200);
+    const cardRef = `${addCard.json.cardRef ?? ""}`;
+    expect(cardRef.length).toBeGreaterThan(0);
+    await runCommandWithRetry(
+      ["bunx", "convex", "env", "set", "DEFAULT_TREASURY_CARD_REF", cardRef],
+      20,
+      500,
+    );
+
+    const intent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "buy a gift card and return the code",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(intent.status).toBe(200);
+    const intentId = `${intent.json.intentId ?? ""}`;
+    expect(intentId.length).toBeGreaterThan(0);
+
+    const status = await postJson(
+      "/api/tools/intent_status",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(status.status).toBe(200);
+    const intentMetadataJson = `${(status.json.intent as Record<string, unknown>).metadataJson ?? ""}`;
+    const parsedMetadata = JSON.parse(intentMetadataJson) as Record<string, unknown>;
+    expect(parsedMetadata.cardRef).toBe(cardRef);
+
+    const execute = await postJson(
+      "/api/tools/execute_intent",
+      { intentId },
+      { token: auth.accessToken },
+    );
+    expect(execute.status).toBe(200);
+    expect(execute.json.status).toBe("ok");
+    expect(execute.json.paymentSource).toBe("treasury_card_ref");
+    expect(execute.json.cardRef).toBe(cardRef);
+
+    const runId = `${execute.json.runId ?? ""}`;
+    const runStatus = await postJson(
+      "/api/tools/run_status",
+      { runId },
+      { token: auth.accessToken },
+    );
+    expect(runStatus.status).toBe(200);
+    expect(runStatus.json.status).toBe("ok");
+    const outputJson = `${runStatus.json.outputJson ?? ""}`;
+    expect(outputJson).toContain("treasury_card_ref");
+    expect(outputJson).toContain(cardRef);
+    expect(outputJson).not.toContain("4242424242424242");
+    expect(outputJson).not.toContain("999");
+  });
+
+  test("wallet_deposit_address auto-generates wallet and funding_mark_settled credits user funds", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const user = await postJson(
+      "/api/tools/user_retrieve",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(user.status).toBe(200);
+    const agentId = `${user.json.agentId ?? ""}`;
+    expect(agentId.length).toBeGreaterThan(0);
+
+    const depositAddress = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(depositAddress.status).toBe(200);
+    expect(`${depositAddress.json.chain ?? ""}`).toBe("solana");
+    expect(`${depositAddress.json.address ?? ""}`.length).toBeGreaterThan(20);
+    expect(`${depositAddress.json.reference ?? ""}`).toContain("fund_");
+
+    const markSettled = await postJson(
+      "/api/tools/funding_mark_settled",
+      {
+        userIdOrAgentId: agentId,
+        amountCents: 1550,
+        txSig: "test-solana-signature-123",
+        chain: "solana",
+      },
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(markSettled.status).toBe(200);
+    expect(markSettled.json.ok).toBe(true);
+    expect(markSettled.json.availableCents).toBe(1550);
+
+    const walletBalance = await postJson(
+      "/api/tools/wallet_balance",
+      { chain: "solana" },
+      { token: auth.accessToken },
+    );
+    expect(walletBalance.status).toBe(200);
+    const account = walletBalance.json.account as Record<string, unknown>;
+    expect(account.availableCents).toBe(1550);
+  });
+
+  test("funding_sync scans Solana inbound tx and credits once only", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const depositAddress = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(depositAddress.status).toBe(200);
+    const address = `${depositAddress.json.address ?? ""}`;
+    expect(address.length).toBeGreaterThan(20);
+
+    seedMockSolanaInboundTxs(address, [
+      {
+        txSig: "test-solana-sync-signature-1",
+        lamports: 100_000_000,
+        slot: 101,
+        blockTime: 1_726_000_000,
+      },
+    ]);
+
+    const firstSync = await postJson(
+      "/api/tools/funding_sync",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(firstSync.status).toBe(200);
+    expect(firstSync.json.ok).toBe(true);
+    expect(firstSync.json.detectedCount).toBe(1);
+    expect(firstSync.json.creditedCount).toBe(1);
+    expect(firstSync.json.alreadyCreditedCount).toBe(0);
+    expect(firstSync.json.totalCreditedCents).toBe(1000);
+
+    const secondSync = await postJson(
+      "/api/tools/funding_sync",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(secondSync.status).toBe(200);
+    expect(secondSync.json.ok).toBe(true);
+    expect(secondSync.json.detectedCount).toBe(1);
+    expect(secondSync.json.creditedCount).toBe(0);
+    expect(secondSync.json.alreadyCreditedCount).toBe(1);
+    expect(secondSync.json.totalCreditedCents).toBe(0);
+
+    const walletBalance = await postJson(
+      "/api/tools/wallet_balance",
+      { chain: "solana" },
+      { token: auth.accessToken },
+    );
+    expect(walletBalance.status).toBe(200);
+    const account = walletBalance.json.account as Record<string, unknown>;
+    expect(account.availableCents).toBe(1000);
+  });
+
+  test("funding_status reports credited and uncredited Solana inbound txs", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+    const user = await postJson(
+      "/api/tools/user_retrieve",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(user.status).toBe(200);
+    const agentId = `${user.json.agentId ?? ""}`;
+    expect(agentId.length).toBeGreaterThan(0);
+
+    const depositAddress = await postJson(
+      "/api/tools/wallet_deposit_address",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(depositAddress.status).toBe(200);
+    const address = `${depositAddress.json.address ?? ""}`;
+    expect(address.length).toBeGreaterThan(20);
+
+    const creditedTxSig = "test-solana-status-credited";
+    const pendingTxSig = "test-solana-status-uncredited";
+    seedMockSolanaInboundTxs(address, [
+      {
+        txSig: pendingTxSig,
+        lamports: 90_000_000,
+        slot: 111,
+        blockTime: 1_726_000_010,
+      },
+      {
+        txSig: creditedTxSig,
+        lamports: 75_000_000,
+        slot: 110,
+        blockTime: 1_726_000_000,
+      },
+    ]);
+
+    const markSettled = await postJson(
+      "/api/tools/funding_mark_settled",
+      {
+        userIdOrAgentId: agentId,
+        amountCents: 750,
+        txSig: creditedTxSig,
+        chain: "solana",
+      },
+      {
+        token: auth.accessToken,
+        headers: { "x-admin-token": ADMIN_CARD_WRITE_TOKEN },
+      },
+    );
+    expect(markSettled.status).toBe(200);
+
+    const status = await postJson(
+      "/api/tools/funding_status",
+      { maxTx: 20 },
+      { token: auth.accessToken },
+    );
+    expect(status.status).toBe(200);
+    expect(status.json.detectedCount).toBe(2);
+    const txs = status.json.txs as Array<Record<string, unknown>>;
+    const credited = txs.find((tx) => `${tx.txSig ?? ""}` === creditedTxSig) ?? null;
+    const uncredited = txs.find((tx) => `${tx.txSig ?? ""}` === pendingTxSig) ?? null;
+    expect(credited).not.toBeNull();
+    expect(uncredited).not.toBeNull();
+    expect(credited?.credited).toBe(true);
+    expect(uncredited?.credited).toBe(false);
+  });
+
+  test("returns per-agent spend summary totals by provider and intentType", async () => {
+    const auth = await login(`agent-${crypto.randomUUID()}`);
+
+    const deposit = await postJson(
+      "/api/tools/wallet_deposit",
+      { amountCents: 5_000, refType: "test", refId: "seed-funds" },
+      { token: auth.accessToken },
+    );
+    expect(deposit.status).toBe(200);
+    expect(deposit.json.ok).toBe(true);
+
+    const firstIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "giftcard test",
+        budgetUsd: 10,
+        rail: "auto",
+        intentType: "giftcard_purchase",
+        provider: "bitrefill",
+        metadata: {
+          brand: "amazon",
+          region: "us",
+          amountUsd: 10,
+          providerDomain: "bitrefill.com",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(firstIntent.status).toBe(200);
+
+    const secondIntent = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "api key test",
+        budgetUsd: 100,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(secondIntent.status).toBe(403);
+    const secondIntentAllowed = await postJson(
+      "/api/tools/create_intent",
+      {
+        task: "api key test",
+        budgetUsd: 8,
+        rail: "auto",
+        intentType: "api_key_purchase",
+        provider: "openrouter",
+        metadata: {
+          provider: "openrouter",
+          accountEmailMode: "existing",
+        },
+      },
+      { token: auth.accessToken },
+    );
+    expect(secondIntentAllowed.status).toBe(200);
+
+    const summary = await postJson(
+      "/api/tools/spend_summary",
+      {},
+      { token: auth.accessToken },
+    );
+    expect(summary.status).toBe(200);
+    expect(summary.json.totalFunded).toBe(5_000);
+    expect(summary.json.totalHeld).toBe(0);
+    expect(summary.json.totalSettled).toBe(0);
+
+    const byProvider = summary.json.totalsByProvider as Record<string, any>;
+    expect(byProvider.bitrefill.totalBudgetCents).toBe(1_000);
+    expect(byProvider.openrouter.totalBudgetCents).toBe(800);
+
+    const byIntentType = summary.json.totalsByIntentType as Record<string, any>;
+    expect(byIntentType.giftcard_purchase.totalBudgetCents).toBe(1_000);
+    expect(byIntentType.api_key_purchase.totalBudgetCents).toBe(800);
+  });
 });
 
 describe("CLI", () => {
@@ -783,44 +1555,11 @@ describe("CLI", () => {
     const consentJson = parseCliJson(consent.stdout);
     expect(typeof consentJson.agentId).toBe("string");
 
-    // Start login in background (it polls for captcha completion)
-    const loginProcess = Bun.spawn({
-      cmd: ["bun", "src/cli.ts", "--json", "login"],
-      cwd: REPO_ROOT,
-      env: { ...process.env, ...envOverrides },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    // Wait for stderr to contain the captcha URL with challenge ID
-    const stderrReader = loginProcess.stderr.getReader();
-    let stderrText = "";
-    const stderrStarted = Date.now();
-    while (Date.now() - stderrStarted < 15_000) {
-      const { value, done } = await stderrReader.read();
-      if (done) break;
-      stderrText += new TextDecoder().decode(value);
-      if (stderrText.includes("challenge=")) break;
-    }
-    stderrReader.releaseLock();
-    const challengeMatch = stderrText.match(/challenge=([a-f0-9]+)/);
-    expect(challengeMatch).not.toBeNull();
-    const challengeId = challengeMatch![1];
-
-    // Complete the captcha challenge via API
-    const callbackResp = await postJson("/auth/captcha-callback", {
-      challengeId,
-      captchaToken: HCAPTCHA_VALID_TOKEN,
-    });
-    expect(callbackResp.status).toBe(200);
-
-    // Wait for CLI to finish
-    const [exitCode, stdout] = await Promise.all([
-      loginProcess.exited,
-      new Response(loginProcess.stdout).text(),
-    ]);
-    expect(exitCode).toBe(0);
-    const loginJson = parseCliJson(stdout);
+    const loginOut = await runCli(
+      ["login", "--captcha-token", HCAPTCHA_VALID_TOKEN],
+      envOverrides,
+    );
+    const loginJson = parseCliJson(loginOut.stdout);
     expect(loginJson.ok).toBe(true);
     expect(loginJson.maxApiCalls).toBe(SESSION_API_CALL_LIMIT);
 
