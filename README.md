@@ -34,17 +34,30 @@ This starts local Convex and writes `.env.local` including:
 
 ## CLI usage
 
-Use the CLI with Bun scripts:
+Public install (no repo clone required):
 
 ```bash
-bun run cli -- consent accept
-bun run cli -- login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
-bun run cli -- user retrieve
-bun run cli -- create_agentmail --email openclaw-demo@yourdomain.com
-bun run cli -- delete_agentmail --inbox-id openclaw-demo@yourdomain.com
+curl -fsSL https://exciting-stingray-685.convex.site/cli/install.sh | sh
 ```
 
-The CLI sends `X-Agent-Id` from local consent metadata and receives a session token valid for 24 hours.
+Then use the installed `bip` command:
+
+```bash
+bip config:set-base-url --url https://exciting-stingray-685.convex.site
+bip consent accept
+bip login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
+bip user retrieve
+bip create_agentmail --email openclaw-demo@yourdomain.com
+bip delete_agentmail --inbox-id openclaw-demo@yourdomain.com
+```
+
+Manifest endpoint:
+
+```bash
+curl -fsSL https://exciting-stingray-685.convex.site/cli/manifest.json
+```
+
+The public CLI sends `X-Agent-Id` from local consent metadata and receives a session token valid for 24 hours.
 
 ### Invite code setup
 

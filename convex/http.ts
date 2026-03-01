@@ -2,6 +2,11 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
+import {
+  buildCliManifest,
+  renderInstallScript,
+  renderPublicCliScript,
+} from "./publicCliAssets";
 
 const http = httpRouter();
 const DEFAULT_HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify";
@@ -13,11 +18,26 @@ function json(status: number, payload: unknown): Response {
   });
 }
 
+function text(status: number, body: string, contentType: string): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": contentType,
+      "Cache-Control": "public, max-age=300",
+    },
+  });
+}
+
 function errorToMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
   return "Unknown error";
+}
+
+function getRequestOrigin(req: Request): string {
+  const url = new URL(req.url);
+  return `${url.protocol}//${url.host}`;
 }
 
 function getConfiguredInviteCodes(): Array<string> {
@@ -171,6 +191,33 @@ async function verifyHcaptcha(
     errorCodes: verificationBody["error-codes"] ?? [],
   };
 }
+
+http.route({
+  path: "/cli/manifest.json",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const origin = getRequestOrigin(req);
+    return json(200, buildCliManifest(origin));
+  }),
+});
+
+http.route({
+  path: "/cli/install.sh",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const origin = getRequestOrigin(req);
+    return text(200, renderInstallScript(origin), "text/x-shellscript; charset=utf-8");
+  }),
+});
+
+http.route({
+  path: "/cli/bip.mjs",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const origin = getRequestOrigin(req);
+    return text(200, renderPublicCliScript(origin), "text/javascript; charset=utf-8");
+  }),
+});
 
 http.route({
   path: "/auth/login",

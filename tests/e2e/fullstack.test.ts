@@ -503,6 +503,36 @@ afterAll(() => {
 });
 
 describe("Auth + Tool API", () => {
+  test("serves public CLI download interface", async () => {
+    const manifestResponse = await fetch(`${CONVEX_SITE_URL}/cli/manifest.json`);
+    expect(manifestResponse.status).toBe(200);
+    const manifest = (await manifestResponse.json()) as {
+      installUrl?: unknown;
+      cliUrl?: unknown;
+      quickInstall?: unknown;
+    };
+    expect(manifest.installUrl).toBe(`${CONVEX_SITE_URL}/cli/install.sh`);
+    expect(manifest.cliUrl).toBe(`${CONVEX_SITE_URL}/cli/bip.mjs`);
+    expect(manifest.quickInstall).toBe(
+      `curl -fsSL ${CONVEX_SITE_URL}/cli/install.sh | sh`,
+    );
+
+    const installScriptResponse = await fetch(`${CONVEX_SITE_URL}/cli/install.sh`);
+    expect(installScriptResponse.status).toBe(200);
+    const installScript = await installScriptResponse.text();
+    expect(installScript).toContain(`BASE_URL="\${BIP_CLI_BASE_URL:-${CONVEX_SITE_URL}}"`);
+    expect(installScript).toContain(`download "$BASE_URL/cli/bip.mjs" "$TARGET"`);
+
+    const publicCliResponse = await fetch(`${CONVEX_SITE_URL}/cli/bip.mjs`);
+    expect(publicCliResponse.status).toBe(200);
+    const publicCliSource = await publicCliResponse.text();
+    expect(publicCliSource).toContain(
+      `const DEFAULT_BASE_URL = "${CONVEX_SITE_URL}";`,
+    );
+    expect(publicCliSource).toContain("create_agentmail");
+    expect(publicCliSource).toContain("delete_agentmail");
+  });
+
   test("rejects login without invite code", async () => {
     const response = await postJson(
       "/auth/login",
