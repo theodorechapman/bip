@@ -1,0 +1,28 @@
+{
+  "name": "bip",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "cli": "tsx src/cli.ts",
+    "convex:dev": "CONVEX_AGENT_MODE=anonymous convex dev --local",
+    "convex:dev:once": "CONVEX_AGENT_MODE=anonymous convex dev --once --configure new --dev-deployment local",
+    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
+    "test": "bun test",
+    "test:e2e": "bun test tests/e2e/fullstack.test.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "commander": "^14.0.1",
+    "convex": "^1.32.0"
+  }
+}
