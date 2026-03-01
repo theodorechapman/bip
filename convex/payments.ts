@@ -26,6 +26,10 @@ function getMinBudgetUsd(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
 }
 
+function isSubsidyMode(): boolean {
+  return (process.env.SUBSIDY_MODE ?? "true").trim().toLowerCase() !== "false";
+}
+
 
 type TracePhase = "started" | "rail_selected" | "failed" | "confirmed";
 
@@ -413,6 +417,7 @@ export const executeIntent = internalAction({
 
     const paymentsMode = getPaymentsMode();
     const minBudget = getMinBudgetUsd();
+    const subsidyMode = isSubsidyMode();
     if (paymentsMode === "metered" && intent.budgetUsd < minBudget) {
       const blockedAt = now();
       await ctx.runMutation(payments._recordEvent, {
@@ -440,12 +445,14 @@ export const executeIntent = internalAction({
       };
     }
 
-    const holdAmountCents = Math.max(1, Math.round(intent.budgetUsd * 100));
-    const holdResult = await ctx.runMutation(payments._holdFundsForIntent, {
-      userId: intent.userId,
-      intentId: intent.intentId,
-      amountCents: holdAmountCents,
-    });
+    const holdAmountCents = subsidyMode ? 0 : Math.max(1, Math.round(intent.budgetUsd * 100));
+    const holdResult = holdAmountCents > 0
+      ? await ctx.runMutation(payments._holdFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+        })
+      : ({ ok: true, availableCents: -1, heldCents: -1 } as const);
     if (!holdResult.ok) {
       const blockedAt = now();
       await ctx.runMutation(payments._recordEvent, {
@@ -602,13 +609,15 @@ export const executeIntent = internalAction({
         error: null,
         updatedAt: doneTs,
       });
-      await ctx.runMutation(payments._settleHeldFundsForIntent, {
-        userId: intent.userId,
-        intentId: intent.intentId,
-        amountCents: holdAmountCents,
-        refType: "bitrefill_order",
-        refId: br.orderId ?? runId,
-      });
+      if (holdAmountCents > 0) {
+        await ctx.runMutation(payments._settleHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "bitrefill_order",
+          refId: br.orderId ?? runId,
+        });
+      }
       await ctx.runMutation(payments._setIntentStatus, {
         intentId: intent.intentId,
         status: "confirmed",
@@ -666,13 +675,15 @@ export const executeIntent = internalAction({
         updatedAt: doneTs,
       });
 
-      await ctx.runMutation(payments._releaseHeldFundsForIntent, {
-        userId: intent.userId,
-        intentId: intent.intentId,
-        amountCents: holdAmountCents,
-        refType: "execution_failed",
-        refId: runId,
-      });
+      if (holdAmountCents > 0) {
+        await ctx.runMutation(payments._releaseHeldFundsForIntent, {
+          userId: intent.userId,
+          intentId: intent.intentId,
+          amountCents: holdAmountCents,
+          refType: "execution_failed",
+          refId: runId,
+        });
+      }
 
       await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
@@ -715,13 +726,15 @@ export const executeIntent = internalAction({
       updatedAt: doneTs,
     });
 
-    await ctx.runMutation(payments._settleHeldFundsForIntent, {
-      userId: intent.userId,
-      intentId: intent.intentId,
-      amountCents: holdAmountCents,
-      refType: "execution_ok",
-      refId: runId,
-    });
+    if (holdAmountCents > 0) {
+      await ctx.runMutation(payments._settleHeldFundsForIntent, {
+        userId: intent.userId,
+        intentId: intent.intentId,
+        amountCents: holdAmountCents,
+        refType: "execution_ok",
+        refId: runId,
+      });
+    }
 
     await ctx.runMutation(payments._setIntentStatus, {
       intentId: intent.intentId,
