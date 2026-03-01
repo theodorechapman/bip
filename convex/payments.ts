@@ -15,6 +15,16 @@ function now(): number {
   return Date.now();
 }
 
+function getPaymentsMode(): "free" | "metered" {
+  const mode = (process.env.PAYMENTS_MODE ?? "free").trim().toLowerCase();
+  return mode === "metered" ? "metered" : "free";
+}
+
+function getMinBudgetUsd(): number {
+  const raw = Number(process.env.MIN_INTENT_BUDGET_USD ?? "1");
+  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
 async function callBrowserUseTask(task: string): Promise<{
   ok: boolean;
   taskId?: string;
@@ -204,12 +214,52 @@ export const getRun = internalQuery({
   },
 });
 
+export const getIntentEvents = internalQuery({
+  args: { intentId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("paymentEvents")
+      .withIndex("by_intent_id_and_created_at", (q) => q.eq("intentId", args.intentId))
+      .order("asc")
+      .collect();
+  },
+});
+
 export const executeIntent = internalAction({
   args: { intentId: v.string() },
   handler: async (ctx, args) => {
     const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: args.intentId });
     if (intent === null) throw new Error("Intent not found");
     if (intent.status !== "approved") throw new Error("Intent is not approved");
+
+    const paymentsMode = getPaymentsMode();
+    const minBudget = getMinBudgetUsd();
+    if (paymentsMode === "metered" && intent.budgetUsd < minBudget) {
+      const blockedAt = now();
+      await ctx.runMutation(internal.payments._recordEvent, {
+        intentId: intent.intentId,
+        eventType: "payment_required",
+        payloadJson: JSON.stringify({
+          reason: "budget_below_minimum",
+          minBudgetUsd: minBudget,
+          providedBudgetUsd: intent.budgetUsd,
+          mode: paymentsMode,
+        }),
+        createdAt: blockedAt,
+      });
+      await ctx.runMutation(internal.payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "failed",
+        updatedAt: blockedAt,
+      });
+      return {
+        runId: null,
+        status: "payment_required",
+        error: "budget_below_minimum",
+        minBudgetUsd: minBudget,
+        providedBudgetUsd: intent.budgetUsd,
+      };
+    }
 
     const runId = randomId("run");
     const ts = now();
@@ -231,14 +281,46 @@ export const executeIntent = internalAction({
       updatedAt: ts,
     });
 
+    const resolvedRail = intent.rail === "auto" ? "x402" : intent.rail;
+
     await ctx.runMutation(internal.payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_started",
-      payloadJson: JSON.stringify({ runId, rail: intent.rail }),
+      payloadJson: JSON.stringify({ runId, rail: resolvedRail }),
       createdAt: ts,
     });
 
-    const buResult = await callBrowserUseTask(intent.task);
+    if (["x402", "bitrefill", "card"].includes(resolvedRail) === false) {
+      await ctx.runMutation(internal.payments._updateRun, {
+        runId,
+        status: "failed",
+        outputJson: null,
+        error: `unsupported_rail:${resolvedRail}`,
+        updatedAt: ts,
+      });
+      await ctx.runMutation(internal.payments._setIntentStatus, {
+        intentId: intent.intentId,
+        status: "failed",
+        updatedAt: ts,
+      });
+      await ctx.runMutation(internal.payments._recordEvent, {
+        intentId: intent.intentId,
+        eventType: "intent_execution_failed",
+        payloadJson: JSON.stringify({ runId, error: `unsupported_rail:${resolvedRail}` }),
+        createdAt: ts,
+      });
+      return { runId, status: "failed", error: `unsupported_rail:${resolvedRail}` };
+    }
+
+    await ctx.runMutation(internal.payments._recordEvent, {
+      intentId: intent.intentId,
+      eventType: "rail_selected",
+      payloadJson: JSON.stringify({ runId, rail: resolvedRail, mode: paymentsMode }),
+      createdAt: ts,
+    });
+
+    const buTask = `[rail=${resolvedRail}] ${intent.task}`;
+    const buResult = await callBrowserUseTask(buTask);
     const doneTs = now();
 
     if (!buResult.ok) {

@@ -141,8 +141,24 @@ bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
 - `intent_create --task <task> [--budget-usd <usd>] [--rail <rail>]`
 - `intent_approve --intent-id <intentId>`
 - `intent_execute --intent-id <intentId>`
+- `intent_status --intent-id <intentId>`
 - `run_status --run-id <runId>`
 - `logout`
+
+### Payments execution env
+
+For live Browser Use-backed intent execution:
+
+```bash
+export BROWSER_USE_API_KEY="<your-bu-api-key>"
+# optional
+export BROWSER_USE_API_BASE="https://api.browser-use.com"
+
+# free | metered
+export PAYMENTS_MODE="free"
+# minimum budget gate in metered mode
+export MIN_INTENT_BUDGET_USD="1"
+```
 
 ## Typecheck
 

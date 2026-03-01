@@ -565,6 +565,17 @@ program
     print(data, Boolean(globalOpts.json));
   });
 
+program
+  .command("intent_status")
+  .requiredOption("--intent-id <intentId>", "Intent id")
+  .action(async (args: { intentId: string }) => {
+    const data = await callProtectedTool<GenericOk>("/api/tools/intent_status", {
+      intentId: args.intentId,
+    });
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
 program.parseAsync().catch((error: unknown) => {
   const message = toErrorMessage(error);
   console.error(message);

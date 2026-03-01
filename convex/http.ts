@@ -540,4 +540,26 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/tools/intent_status",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "intent_status");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { intentId?: unknown };
+      if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
+      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      if (intent === null || intent.userId !== auth.session.userId) {
+        return json(404, { error: "intent not found" });
+      }
+      const events = await ctx.runQuery(internal.payments.getIntentEvents, { intentId: payload.intentId });
+      return json(200, { intent, events });
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
 export default http;
