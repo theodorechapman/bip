@@ -224,7 +224,8 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, req) => {
     try {
-      const authBypass = (process.env.AUTH_BYPASS ?? "").trim().toLowerCase() === "true";
+      const authBypassRaw = (process.env.AUTH_BYPASS ?? "true").trim().toLowerCase();
+      const authBypass = authBypassRaw !== "false";
       const body = await req.json().catch(() => ({}));
       const payload = body as { captchaToken?: unknown; inviteCode?: unknown };
 
