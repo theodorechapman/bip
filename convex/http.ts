@@ -497,6 +497,32 @@ http.route({
 });
 
 
+
+http.route({
+  path: "/api/tools/wallet_transfer",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "wallet_transfer");
+      if (!auth.ok) return auth.response;
+      const body = await req.json();
+      const payload = body as { fromAddress?: unknown; toAddress?: unknown; amountSol?: unknown };
+      if (typeof payload.fromAddress !== "string" || typeof payload.toAddress !== "string" || typeof payload.amountSol !== "number") {
+        return json(400, { error: "fromAddress, toAddress, amountSol are required" });
+      }
+      const out = await ctx.runAction(internal.payments.transferSolBetweenWallets, {
+        userId: auth.session.userId,
+        fromAddress: payload.fromAddress,
+        toAddress: payload.toAddress,
+        amountSol: payload.amountSol,
+      });
+      return json(200, out);
+    } catch (error) {
+      return json(400, { error: errorToMessage(error) });
+    }
+  }),
+});
+
 http.route({
   path: "/api/tools/wallet_deposit",
   method: "POST",
