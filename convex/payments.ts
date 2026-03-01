@@ -157,6 +157,30 @@ async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promis
   return { ok: false, taskId, error: "bu task timeout after 60s" };
 }
 
+
+function buildBrowserUseHandoffUrl(taskId: string | undefined): string | null {
+  if (!taskId) return null;
+  const template = (process.env.BROWSER_USE_TASK_URL_TEMPLATE ?? "https://cloud.browser-use.com/tasks/{taskId}").trim();
+  if (!template) return null;
+  return template.replaceAll("{taskId}", taskId);
+}
+
+function outputSuggestsManualIntervention(output: unknown): boolean {
+  if (typeof output !== "string") return false;
+  const t = output.toLowerCase();
+  return (
+    t.includes("need you to log in") ||
+    t.includes("please log in") ||
+    t.includes("need to be logged") ||
+    t.includes("sign-in") ||
+    t.includes("sign in") ||
+    t.includes("captcha") ||
+    t.includes("2fa") ||
+    t.includes("two-factor") ||
+    t.includes("verification code")
+  );
+}
+
 export const registerWallet = internalMutation({
   args: {
     userId: v.id("users"),
@@ -505,10 +529,18 @@ export const executeIntent = internalAction({
       return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId };
     }
 
+    const handoffNeeded = outputSuggestsManualIntervention(buResult.output);
+    const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
+
     await ctx.runMutation(payments._updateRun, {
       runId,
-      status: "ok",
-      outputJson: JSON.stringify({ taskId: buResult.taskId ?? null, output: buResult.output ?? null, raw: buResult.raw ?? null }),
+      status: handoffNeeded ? "action_required" : "ok",
+      outputJson: JSON.stringify({
+        taskId: buResult.taskId ?? null,
+        output: buResult.output ?? null,
+        raw: buResult.raw ?? null,
+        handoffUrl,
+      }),
       error: null,
       updatedAt: doneTs,
     });
@@ -523,14 +555,14 @@ export const executeIntent = internalAction({
 
     await ctx.runMutation(payments._setIntentStatus, {
       intentId: intent.intentId,
-      status: "confirmed",
+      status: handoffNeeded ? "action_required" : "confirmed",
       updatedAt: doneTs,
     });
 
     await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_confirmed",
-      payloadJson: JSON.stringify({ runId, traceId, taskId: buResult.taskId ?? null }),
+      payloadJson: JSON.stringify({ runId, traceId, taskId: buResult.taskId ?? null, handoffNeeded, handoffUrl }),
       createdAt: doneTs,
     });
 
@@ -551,19 +583,29 @@ export const executeIntent = internalAction({
     if (intent.intentType === "api_key_purchase") {
       return {
         runId,
-        status: "ok",
+        status: handoffNeeded ? "action_required" : "ok",
         taskId: buResult.taskId ?? null,
         output: buResult.output ?? null,
         traceId,
-        credential: {
-          type: "api_key",
-          provider: intent.provider ?? "unknown",
-          secretRef: randomId("sec"),
-        },
+        handoffUrl,
+        credential: handoffNeeded
+          ? null
+          : {
+              type: "api_key",
+              provider: intent.provider ?? "unknown",
+              secretRef: randomId("sec"),
+            },
       };
     }
 
-    return { runId, status: "ok", taskId: buResult.taskId ?? null, output: buResult.output ?? null, traceId };
+    return {
+      runId,
+      status: handoffNeeded ? "action_required" : "ok",
+      taskId: buResult.taskId ?? null,
+      output: buResult.output ?? null,
+      traceId,
+      handoffUrl,
+    };
   },
 });
 
