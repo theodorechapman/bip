@@ -1,12 +1,12 @@
 # MoonPay-Style Agent Auth Demo (TypeScript + Convex)
 
-This repo now contains a demo CLI application that mirrors MoonPay's agent authentication flow:
+This repo contains a demo CLI application with a simplified MoonPay-style flow:
 
-1. `login` with `email + captchaToken`
-2. `verify` with `email + 6-digit OTP`
-3. store encrypted credentials locally
-4. call protected tool endpoints with bearer token
-5. auto-refresh on expiry / `401`
+1. `login` with `inviteCode + hCaptcha` (no email OTP)
+2. issue a 24-hour bearer session token
+3. enforce a per-session API call quota on protected endpoints
+4. store encrypted credentials locally
+5. call protected tool endpoints (including `create_agentmail`)
 
 ## Stack
 
@@ -33,18 +33,43 @@ This starts local Convex and writes `.env.local` including:
 
 ## CLI usage
 
-Use the CLI through npm scripts:
+Use the CLI with Bun scripts:
 
 ```bash
 bun run cli -- consent accept
-bun run cli -- login --email you@example.com --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
-bun run cli -- verify --email you@example.com --code 123456
+bun run cli -- login --invite-code "<invite-code>" --captcha-token 10000000-aaaa-bbbb-cccc-000000000001
 bun run cli -- user retrieve
+bun run cli -- create_agentmail --email openclaw-demo@yourdomain.com
+bun run cli -- delete_agentmail --inbox-id openclaw-demo@yourdomain.com
 ```
 
-### Demo OTP
+The CLI sends `X-Agent-Id` from local consent metadata and receives a session token valid for 24 hours.
 
-For local testing, `login` returns a `debugCode` in the response so you can immediately run `verify`.
+### Invite code setup
+
+Set an invite code gate on Convex:
+
+```bash
+bunx convex env set INVITE_CODES "<invite-code>"
+```
+
+For production:
+
+```bash
+bunx convex env set --prod INVITE_CODES "<invite-code>"
+```
+
+You can set multiple codes as a comma-separated list:
+
+```bash
+bunx convex env set --prod INVITE_CODES "code-a,code-b,code-c"
+```
+
+Optional local convenience for CLI:
+
+```bash
+export BIP_INVITE_CODE="<invite-code>"
+```
 
 ### hCaptcha setup
 
@@ -67,15 +92,36 @@ For test/demo mode with hCaptcha test keys, use:
 - `HCAPTCHA_SITE_KEY=10000000-ffff-ffff-ffff-000000000001`
 - `HCAPTCHA_SECRET_KEY=0x0000000000000000000000000000000000000000`
 
+### AgentMail setup
+
+Set backend environment variables:
+
+```bash
+bunx convex env set AGENTMAIL_API_KEY "<your-agentmail-api-key>"
+```
+
+Optional (defaults to `https://api.agentmail.to`):
+
+```bash
+bunx convex env set AGENTMAIL_BASE_URL "https://api.agentmail.to"
+```
+
+For production:
+
+```bash
+bunx convex env set --prod AGENTMAIL_API_KEY "<your-agentmail-api-key>"
+bunx convex env set --prod AGENTMAIL_BASE_URL "https://api.agentmail.to"
+```
+
 ## Commands
 
 - `consent accept`
 - `consent check`
 - `config:set-base-url --url <url>`
-- `login --email <email> [--captcha-token <token>]`
-- `verify --email <email> --code <6-digit>`
-- `refresh`
+- `login --invite-code <code> [--captcha-token <token>]`
 - `user retrieve`
+- `create_agentmail --email <email>`
+- `delete_agentmail --inbox-id <inboxId>`
 - `logout`
 
 ## Typecheck
@@ -83,3 +129,22 @@ For test/demo mode with hCaptcha test keys, use:
 ```bash
 bun run typecheck
 ```
+
+## Testing
+
+Run the Bun E2E suite:
+
+```bash
+bun run test:e2e
+```
+
+What it covers:
+
+- invite-code + hCaptcha login gating
+- 24-hour session issuance
+- per-session API quota enforcement (`100` calls)
+- `create_agentmail` and `delete_agentmail`
+- CLI flow (`consent`, `login`, tool calls)
+
+The test harness uses local mock providers for hCaptcha and AgentMail.
+It simulates AgentMail free-tier behavior with a cap of `3` active inboxes and validates that deleting an inbox frees a slot.

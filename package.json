@@ -7,7 +7,9 @@
     "cli": "tsx src/cli.ts",
     "convex:dev": "CONVEX_AGENT_MODE=anonymous convex dev --local",
     "convex:dev:once": "CONVEX_AGENT_MODE=anonymous convex dev --once --configure new --dev-deployment local",
-    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
+    "test": "bun test",
+    "test:e2e": "bun test tests/e2e/fullstack.test.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

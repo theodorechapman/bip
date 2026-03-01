@@ -1,23 +1,22 @@
 import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
-const OTP_TTL_MS = 10 * 60 * 1000;
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_OTP_ATTEMPTS = 5;
+const ACCESS_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_API_CALL_LIMIT = 100;
+const LOGIN_RATE_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_SUBJECT_LIMIT = 10;
+const LOGIN_IP_LIMIT = 30;
 
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
+function normalizeSubject(subject: string): string {
+  return subject.trim().toLowerCase();
 }
 
-function randomInt(min: number, max: number): number {
-  const span = max - min + 1;
-  return Math.floor(Math.random() * span) + min;
-}
-
-function sixDigitCode(): string {
-  const code = randomInt(0, 999999);
-  return code.toString().padStart(6, "0");
+function normalizeIp(ip: string): string {
+  const value = ip.trim();
+  if (value.length === 0) {
+    return "unknown";
+  }
+  return value;
 }
 
 function randomHex(bytes: number): string {
@@ -37,37 +36,115 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
-async function issueTokenPair(): Promise<{
-  accessToken: string;
-  refreshToken: string;
-  accessTokenHash: string;
-  refreshTokenHash: string;
-}> {
-  const accessToken = `at_${randomHex(32)}`;
-  const refreshToken = `rt_${randomHex(32)}`;
-  const accessTokenHash = await sha256Hex(accessToken);
-  const refreshTokenHash = await sha256Hex(refreshToken);
-  return { accessToken, refreshToken, accessTokenHash, refreshTokenHash };
+function countRecentAttempts(
+  attempts: Array<{ createdAt: number }>,
+  now: number,
+  windowMs: number,
+): number {
+  let count = 0;
+  for (const attempt of attempts) {
+    if (now - attempt.createdAt <= windowMs) {
+      count += 1;
+    }
+  }
+  return count;
 }
+
+export const checkRateLimit = internalQuery({
+  args: {
+    action: v.literal("login"),
+    subject: v.string(),
+    ip: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const subject = normalizeSubject(args.subject);
+    const ip = normalizeIp(args.ip);
+    const now = Date.now();
+    const subjectAttempts = await ctx.db
+      .query("authAttempts")
+      .withIndex("by_action_and_subject_and_created_at", (q) =>
+        q.eq("action", args.action).eq("subject", subject),
+      )
+      .order("desc")
+      .take(Math.max(LOGIN_SUBJECT_LIMIT * 3, 50));
+    const subjectCount = countRecentAttempts(
+      subjectAttempts,
+      now,
+      LOGIN_RATE_WINDOW_MS,
+    );
+    if (subjectCount >= LOGIN_SUBJECT_LIMIT) {
+      return {
+        allowed: false,
+        reason: "subject_rate_limited",
+        retryAfterSeconds: Math.ceil(LOGIN_RATE_WINDOW_MS / 1000),
+      };
+    }
+    if (ip === "unknown") {
+      return {
+        allowed: true,
+        reason: null,
+        retryAfterSeconds: 0,
+      };
+    }
+    const ipAttempts = await ctx.db
+      .query("authAttempts")
+      .withIndex("by_action_and_ip_and_created_at", (q) =>
+        q.eq("action", args.action).eq("ip", ip),
+      )
+      .order("desc")
+      .take(Math.max(LOGIN_IP_LIMIT * 3, 100));
+    const ipCount = countRecentAttempts(ipAttempts, now, LOGIN_RATE_WINDOW_MS);
+    if (ipCount >= LOGIN_IP_LIMIT) {
+      return {
+        allowed: false,
+        reason: "ip_rate_limited",
+        retryAfterSeconds: Math.ceil(LOGIN_RATE_WINDOW_MS / 1000),
+      };
+    }
+    return {
+      allowed: true,
+      reason: null,
+      retryAfterSeconds: 0,
+    };
+  },
+});
+
+export const recordAuthAttempt = internalMutation({
+  args: {
+    action: v.literal("login"),
+    subject: v.string(),
+    ip: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("authAttempts", {
+      action: args.action,
+      subject: normalizeSubject(args.subject),
+      ip: normalizeIp(args.ip),
+      createdAt: Date.now(),
+    });
+    return null;
+  },
+});
 
 export const startLogin = internalMutation({
   args: {
-    email: v.string(),
+    agentId: v.string(),
   },
   handler: async (ctx, args) => {
-    const email = normalizeEmail(args.email);
-    if (!email.includes("@")) {
-      throw new Error("Invalid email");
+    const agentId = normalizeSubject(args.agentId);
+    if (agentId.length < 3) {
+      throw new Error("Invalid X-Agent-Id header");
     }
 
     const now = Date.now();
     let user = await ctx.db
       .query("users")
-      .withIndex("by_email", (q) => q.eq("email", email))
+      .withIndex("by_agent_id", (q) => q.eq("agentId", agentId))
       .unique();
     if (user === null) {
       const userId = await ctx.db.insert("users", {
-        email,
+        agentId,
+        email: null,
         createdAt: now,
       });
       const inserted = await ctx.db.get(userId);
@@ -77,183 +154,122 @@ export const startLogin = internalMutation({
       user = inserted;
     }
 
-    const otpCode = sixDigitCode();
-    const codeHash = await sha256Hex(otpCode);
-    await ctx.db.insert("otpChallenges", {
-      email,
-      codeHash,
-      expiresAt: now + OTP_TTL_MS,
-      attempts: 0,
-      maxAttempts: MAX_OTP_ATTEMPTS,
-      usedAt: null,
-      createdAt: now,
-    });
-
-    return {
-      email,
-      otpSent: true,
-      expiresAt: now + OTP_TTL_MS,
-      // Demo-only convenience so local CLI testing doesn't require real email delivery.
-      debugCode: otpCode,
-      userId: user._id,
-    };
-  },
-});
-
-export const verifyLogin = internalMutation({
-  args: {
-    email: v.string(),
-    code: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const email = normalizeEmail(args.email);
-    const code = args.code.trim();
-    if (!/^\d{6}$/.test(code)) {
-      throw new Error("Code must be 6 digits");
-    }
-
-    const now = Date.now();
-    const challenges = await ctx.db
-      .query("otpChallenges")
-      .withIndex("by_email_and_created_at", (q) => q.eq("email", email))
-      .order("desc")
-      .take(5);
-    const latestValidChallenge =
-      challenges.find((challenge) => challenge.usedAt === null) ?? null;
-    if (latestValidChallenge === null) {
-      throw new Error("No active login challenge");
-    }
-    if (latestValidChallenge.expiresAt < now) {
-      throw new Error("Verification code expired");
-    }
-    if (latestValidChallenge.attempts >= latestValidChallenge.maxAttempts) {
-      throw new Error("Too many verification attempts");
-    }
-
-    const incomingHash = await sha256Hex(code);
-    if (incomingHash !== latestValidChallenge.codeHash) {
-      await ctx.db.patch(latestValidChallenge._id, {
-        attempts: latestValidChallenge.attempts + 1,
-      });
-      throw new Error("Invalid verification code");
-    }
-    await ctx.db.patch(latestValidChallenge._id, {
-      usedAt: now,
-    });
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .unique();
-    if (user === null) {
-      throw new Error("User not found");
-    }
-
-    const pair = await issueTokenPair();
+    const accessToken = `at_${randomHex(32)}`;
+    const tokenHash = await sha256Hex(accessToken);
     const accessExpiresAt = now + ACCESS_TTL_MS;
-    const refreshExpiresAt = now + REFRESH_TTL_MS;
 
     await ctx.db.insert("accessSessions", {
       userId: user._id,
-      tokenHash: pair.accessTokenHash,
+      tokenHash,
       expiresAt: accessExpiresAt,
       revokedAt: null,
-      createdAt: now,
-    });
-    await ctx.db.insert("refreshSessions", {
-      userId: user._id,
-      tokenHash: pair.refreshTokenHash,
-      expiresAt: refreshExpiresAt,
-      revokedAt: null,
-      replacedByTokenHash: null,
+      maxApiCalls: SESSION_API_CALL_LIMIT,
+      usedApiCalls: 0,
+      lastUsedAt: null,
       createdAt: now,
     });
 
     return {
-      accessToken: pair.accessToken,
-      refreshToken: pair.refreshToken,
+      accessToken,
       expiresAt: Math.floor(accessExpiresAt / 1000),
+      maxApiCalls: SESSION_API_CALL_LIMIT,
+      remainingApiCalls: SESSION_API_CALL_LIMIT,
     };
   },
 });
 
-export const refreshAccess = internalMutation({
-  args: {
-    refreshToken: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    const refreshTokenHash = await sha256Hex(args.refreshToken.trim());
-    const refreshSession = await ctx.db
-      .query("refreshSessions")
-      .withIndex("by_token_hash", (q) => q.eq("tokenHash", refreshTokenHash))
-      .unique();
-    if (refreshSession === null) {
-      throw new Error("Invalid refresh token");
-    }
-    if (refreshSession.revokedAt !== null) {
-      throw new Error("Refresh token already revoked");
-    }
-    if (refreshSession.expiresAt < now) {
-      throw new Error("Refresh token expired");
-    }
-
-    const pair = await issueTokenPair();
-    const accessExpiresAt = now + ACCESS_TTL_MS;
-    const refreshExpiresAt = now + REFRESH_TTL_MS;
-
-    await ctx.db.patch(refreshSession._id, {
-      revokedAt: now,
-      replacedByTokenHash: pair.refreshTokenHash,
-    });
-    await ctx.db.insert("accessSessions", {
-      userId: refreshSession.userId,
-      tokenHash: pair.accessTokenHash,
-      expiresAt: accessExpiresAt,
-      revokedAt: null,
-      createdAt: now,
-    });
-    await ctx.db.insert("refreshSessions", {
-      userId: refreshSession.userId,
-      tokenHash: pair.refreshTokenHash,
-      expiresAt: refreshExpiresAt,
-      revokedAt: null,
-      replacedByTokenHash: null,
-      createdAt: now,
-    });
-
-    return {
-      accessToken: pair.accessToken,
-      refreshToken: pair.refreshToken,
-      expiresAt: Math.floor(accessExpiresAt / 1000),
-    };
-  },
-});
-
-export const authenticateAccessToken = internalQuery({
+export const consumeAccessTokenUse = internalMutation({
   args: {
     accessToken: v.string(),
+    toolName: v.string(),
   },
   handler: async (ctx, args) => {
+    const accessToken = args.accessToken.trim();
+    const toolName = args.toolName.trim();
+    if (accessToken.length === 0) {
+      return {
+        ok: false,
+        reason: "invalid_token",
+      };
+    }
+    if (toolName.length === 0) {
+      throw new Error("toolName is required");
+    }
+
     const now = Date.now();
-    const tokenHash = await sha256Hex(args.accessToken.trim());
+    const tokenHash = await sha256Hex(accessToken);
     const accessSession = await ctx.db
       .query("accessSessions")
       .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
       .unique();
     if (accessSession === null) {
-      return null;
+      return {
+        ok: false,
+        reason: "invalid_token",
+      };
     }
-    if (accessSession.revokedAt !== null || accessSession.expiresAt < now) {
-      return null;
+    if (accessSession.revokedAt !== null) {
+      return {
+        ok: false,
+        reason: "revoked",
+      };
+    }
+    if (accessSession.expiresAt < now) {
+      return {
+        ok: false,
+        reason: "expired",
+      };
+    }
+    if (accessSession.usedApiCalls >= accessSession.maxApiCalls) {
+      return {
+        ok: false,
+        reason: "quota_exceeded",
+      };
     }
     const user = await ctx.db.get(accessSession.userId);
     if (user === null) {
-      return null;
+      return {
+        ok: false,
+        reason: "user_not_found",
+      };
     }
+
+    const nextUsed = accessSession.usedApiCalls + 1;
+    await ctx.db.patch(accessSession._id, {
+      usedApiCalls: nextUsed,
+      lastUsedAt: now,
+    });
+
     return {
+      ok: true,
       userId: user._id,
+      agentId: user.agentId,
       email: user.email,
+      maxApiCalls: accessSession.maxApiCalls,
+      remainingApiCalls: accessSession.maxApiCalls - nextUsed,
     };
+  },
+});
+
+export const logoutSession = internalMutation({
+  args: {
+    accessToken: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const accessTokenHash = await sha256Hex(args.accessToken.trim());
+    const accessSession = await ctx.db
+      .query("accessSessions")
+      .withIndex("by_token_hash", (q) => q.eq("tokenHash", accessTokenHash))
+      .unique();
+    if (accessSession === null) {
+      return { ok: true };
+    }
+    if (accessSession.revokedAt === null) {
+      await ctx.db.patch(accessSession._id, {
+        revokedAt: now,
+      });
+    }
+    return { ok: true };
   },
 });

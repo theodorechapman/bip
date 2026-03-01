@@ -1,9 +1,10 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 
 const http = httpRouter();
-const HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify";
+const DEFAULT_HCAPTCHA_VERIFY_URL = "https://api.hcaptcha.com/siteverify";
 
 function json(status: number, payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -17,6 +18,91 @@ function errorToMessage(error: unknown): string {
     return error.message;
   }
   return "Unknown error";
+}
+
+function getConfiguredInviteCodes(): Array<string> {
+  const raw =
+    process.env.INVITE_CODES?.trim() ?? process.env.INVITE_CODE?.trim() ?? "";
+  if (raw.length === 0) {
+    throw new Error("INVITE_CODES is not configured");
+  }
+  const codes = raw
+    .split(/[,\s]+/g)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (codes.length === 0) {
+    throw new Error("INVITE_CODES is not configured");
+  }
+  return codes;
+}
+
+function getAgentId(req: Request): string | null {
+  const raw = req.headers.get("x-agent-id");
+  if (raw === null) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return trimmed;
+}
+
+function getBearerToken(req: Request): string | null {
+  const authorization = req.headers.get("authorization") ?? "";
+  const [scheme, token] = authorization.split(" ");
+  if (scheme?.toLowerCase() !== "bearer" || token === undefined || token.length === 0) {
+    return null;
+  }
+  return token;
+}
+
+type AuthedSession = {
+  userId: Id<"users">;
+  agentId: string;
+  email: string | null;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
+async function authenticateToolCall(
+  ctx: any,
+  req: Request,
+  toolName: string,
+): Promise<{ ok: true; session: AuthedSession } | { ok: false; response: Response }> {
+  const token = getBearerToken(req);
+  if (token === null) {
+    return {
+      ok: false,
+      response: json(401, { error: "Missing bearer token" }),
+    };
+  }
+  const session = await ctx.runMutation(internal.auth.consumeAccessTokenUse, {
+    accessToken: token,
+    toolName,
+  });
+  if (!session.ok) {
+    if (session.reason === "quota_exceeded") {
+      return {
+        ok: false,
+        response: json(429, { error: "Session API call quota exceeded" }),
+      };
+    }
+    return {
+      ok: false,
+      response: json(401, { error: "Invalid or expired access token" }),
+    };
+  }
+  return {
+    ok: true,
+    session: {
+      userId: session.userId,
+      agentId: session.agentId,
+      email: session.email,
+      maxApiCalls: session.maxApiCalls,
+      remainingApiCalls: session.remainingApiCalls,
+    },
+  };
 }
 
 type HcaptchaVerifyResponse = {
@@ -54,6 +140,8 @@ async function verifyHcaptcha(
     throw new Error("HCAPTCHA_SECRET_KEY is not configured");
   }
   const siteKey = process.env.HCAPTCHA_SITE_KEY?.trim();
+  const verifyUrl =
+    process.env.HCAPTCHA_VERIFY_URL?.trim() ?? DEFAULT_HCAPTCHA_VERIFY_URL;
   const params = new URLSearchParams();
   params.set("secret", secret);
   params.set("response", captchaToken);
@@ -63,7 +151,7 @@ async function verifyHcaptcha(
   if (remoteIp !== null) {
     params.set("remoteip", remoteIp);
   }
-  const verificationResponse = await fetch(HCAPTCHA_VERIFY_URL, {
+  const verificationResponse = await fetch(verifyUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
@@ -90,16 +178,43 @@ http.route({
   handler: httpAction(async (ctx, req) => {
     try {
       const body = await req.json();
-      const payload = body as { email?: unknown; captchaToken?: unknown };
+      const payload = body as { captchaToken?: unknown; inviteCode?: unknown };
       if (
-        typeof payload.email !== "string" ||
-        typeof payload.captchaToken !== "string"
+        typeof payload.captchaToken !== "string" ||
+        typeof payload.inviteCode !== "string"
       ) {
-        return json(400, { error: "email and captchaToken are required" });
+        return json(400, { error: "captchaToken and inviteCode are required" });
       }
+      const inviteCodes = getConfiguredInviteCodes();
+      const agentId = getAgentId(req);
+      if (agentId === null) {
+        return json(400, { error: "X-Agent-Id header is required" });
+      }
+      const ip = getClientIp(req) ?? "unknown";
+      const loginRateLimit = await ctx.runQuery(internal.auth.checkRateLimit, {
+        action: "login",
+        subject: agentId,
+        ip,
+      });
+      if (!loginRateLimit.allowed) {
+        return json(429, {
+          error: "Too many login attempts",
+          reason: loginRateLimit.reason,
+          retryAfterSeconds: loginRateLimit.retryAfterSeconds,
+        });
+      }
+      await ctx.runMutation(internal.auth.recordAuthAttempt, {
+        action: "login",
+        subject: agentId,
+        ip,
+      });
       const captchaToken = payload.captchaToken.trim();
       if (captchaToken.length === 0) {
         return json(400, { error: "captchaToken must not be empty" });
+      }
+      const inviteCode = payload.inviteCode.trim();
+      if (inviteCode.length === 0) {
+        return json(400, { error: "inviteCode must not be empty" });
       }
       const captchaResult = await verifyHcaptcha(captchaToken, getClientIp(req));
       if (!captchaResult.ok) {
@@ -108,12 +223,18 @@ http.route({
           errorCodes: captchaResult.errorCodes,
         });
       }
+      if (!inviteCodes.includes(inviteCode)) {
+        return json(403, { error: "Invalid invite code" });
+      }
       const result = await ctx.runMutation(internal.auth.startLogin, {
-        email: payload.email,
+        agentId,
       });
       return json(200, result);
     } catch (error) {
       const message = errorToMessage(error);
+      if (message.includes("INVITE_CODES is not configured")) {
+        return json(500, { error: message });
+      }
       if (message.includes("HCAPTCHA_SECRET_KEY is not configured")) {
         return json(500, { error: message });
       }
@@ -126,38 +247,16 @@ http.route({
 });
 
 http.route({
-  path: "/auth/verify",
+  path: "/auth/logout",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
     try {
-      const body = await req.json();
-      const payload = body as { email?: unknown; code?: unknown };
-      if (typeof payload.email !== "string" || typeof payload.code !== "string") {
-        return json(400, { error: "email and code are required" });
+      const accessToken = getBearerToken(req);
+      if (accessToken === null) {
+        return json(401, { error: "Missing bearer token" });
       }
-      const result = await ctx.runMutation(internal.auth.verifyLogin, {
-        email: payload.email,
-        code: payload.code,
-      });
-      return json(200, result);
-    } catch (error) {
-      return json(401, { error: errorToMessage(error) });
-    }
-  }),
-});
-
-http.route({
-  path: "/auth/refresh",
-  method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const body = await req.json();
-      const payload = body as { refreshToken?: unknown };
-      if (typeof payload.refreshToken !== "string") {
-        return json(400, { error: "refreshToken is required" });
-      }
-      const result = await ctx.runMutation(internal.auth.refreshAccess, {
-        refreshToken: payload.refreshToken,
+      const result = await ctx.runMutation(internal.auth.logoutSession, {
+        accessToken,
       });
       return json(200, result);
     } catch (error) {
@@ -171,23 +270,88 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, req) => {
     try {
-      const authorization = req.headers.get("authorization") ?? "";
-      const [scheme, token] = authorization.split(" ");
-      if (scheme?.toLowerCase() !== "bearer" || !token) {
-        return json(401, { error: "Missing bearer token" });
-      }
-      const session = await ctx.runQuery(internal.auth.authenticateAccessToken, {
-        accessToken: token,
-      });
-      if (session === null) {
-        return json(401, { error: "Invalid or expired access token" });
+      const auth = await authenticateToolCall(ctx, req, "user_retrieve");
+      if (!auth.ok) {
+        return auth.response;
       }
       return json(200, {
-        id: session.userId,
-        email: session.email,
+        id: auth.session.userId,
+        email: auth.session.email,
+        agentId: auth.session.agentId,
+        maxApiCalls: auth.session.maxApiCalls,
+        remainingApiCalls: auth.session.remainingApiCalls,
       });
     } catch (error) {
       return json(401, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/create_agentmail",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "create_agentmail");
+      if (!auth.ok) {
+        return auth.response;
+      }
+      const body = await req.json();
+      const payload = body as { email?: unknown };
+      if (typeof payload.email !== "string" || payload.email.trim().length === 0) {
+        return json(400, { error: "email is required" });
+      }
+      const created = await ctx.runAction(internal.agentmail.createAgentmailInbox, {
+        userId: auth.session.userId,
+        requestedEmail: payload.email,
+      });
+      return json(200, {
+        ...created,
+        maxApiCalls: auth.session.maxApiCalls,
+        remainingApiCalls: auth.session.remainingApiCalls,
+      });
+    } catch (error) {
+      const message = errorToMessage(error);
+      if (message.includes("AGENTMAIL_API_KEY is not configured")) {
+        return json(500, { error: message });
+      }
+      return json(400, { error: message });
+    }
+  }),
+});
+
+http.route({
+  path: "/api/tools/delete_agentmail",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const auth = await authenticateToolCall(ctx, req, "delete_agentmail");
+      if (!auth.ok) {
+        return auth.response;
+      }
+      const body = await req.json();
+      const payload = body as { inboxId?: unknown };
+      if (
+        typeof payload.inboxId !== "string" ||
+        payload.inboxId.trim().length === 0
+      ) {
+        return json(400, { error: "inboxId is required" });
+      }
+      const deleted = await ctx.runAction(internal.agentmail.deleteAgentmailInbox, {
+        userId: auth.session.userId,
+        inboxId: payload.inboxId,
+      });
+      return json(200, {
+        ...deleted,
+        maxApiCalls: auth.session.maxApiCalls,
+        remainingApiCalls: auth.session.remainingApiCalls,
+      });
+    } catch (error) {
+      const message = errorToMessage(error);
+      if (message.includes("AGENTMAIL_API_KEY is not configured")) {
+        return json(500, { error: message });
+      }
+      return json(400, { error: message });
     }
   }),
 });

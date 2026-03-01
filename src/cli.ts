@@ -2,10 +2,8 @@
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -27,7 +25,6 @@ type Consent = {
 
 type Credentials = {
   accessToken: string;
-  refreshToken: string;
   expiresAt: number;
   baseUrl: string;
 };
@@ -49,21 +46,35 @@ type EncryptedEnvelope = {
 };
 
 type LoginResponse = {
-  email: string;
-  otpSent: boolean;
-  expiresAt: number;
-  debugCode: string;
-};
-
-type VerifyResponse = {
   accessToken: string;
-  refreshToken: string;
   expiresAt: number;
+  maxApiCalls: number;
+  remainingApiCalls: number;
 };
 
 type UserRetrieveResponse = {
   id: string;
+  email: string | null;
+  agentId: string;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
+type CreateAgentmailResponse = {
+  inboxId: string;
   email: string;
+  podId: string;
+  clientId: string | null;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
+type DeleteAgentmailResponse = {
+  ok: boolean;
+  inboxId: string;
+  deletedLocalRecords: number;
+  maxApiCalls: number;
+  remainingApiCalls: number;
 };
 
 const CLI_VERSION = "0.1.0";
@@ -71,7 +82,6 @@ const CONFIG_DIR = join(homedir(), ".config", "moonpay-agent-auth-demo");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const CONSENT_FILE = join(CONFIG_DIR, "consent.json");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
-const CREDENTIALS_LOCK_FILE = join(CONFIG_DIR, ".credentials.lock");
 const ENCRYPTION_KEY_FILE = join(CONFIG_DIR, ".encryption-key");
 
 const SCRYPT_N = 2 ** 18;
@@ -79,9 +89,8 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_KEY_LEN = 32;
 const SCRYPT_MAX_MEM = 512 * 1024 * 1024;
-const ACCESS_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
-const LOCK_STALE_MS = 30 * 1000;
 const HCAPTCHA_TEST_RESPONSE_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001";
+const INVITE_CODE_ENV_VAR = "BIP_INVITE_CODE";
 
 class ApiError extends Error {
   status: number;
@@ -246,7 +255,6 @@ function loadCredentials(): Credentials | null {
     const parsed = JSON.parse(raw) as Credentials;
     if (
       typeof parsed.accessToken !== "string" ||
-      typeof parsed.refreshToken !== "string" ||
       typeof parsed.expiresAt !== "number" ||
       typeof parsed.baseUrl !== "string"
     ) {
@@ -261,54 +269,6 @@ function loadCredentials(): Credentials | null {
 function clearCredentials(): void {
   if (existsSync(CREDENTIALS_FILE)) {
     unlinkSync(CREDENTIALS_FILE);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function acquireRefreshLock(): (() => void) | null {
-  ensureConfigDir();
-  try {
-    const fd = openSync(CREDENTIALS_LOCK_FILE, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-    closeSync(fd);
-    return () => {
-      try {
-        unlinkSync(CREDENTIALS_LOCK_FILE);
-      } catch {
-        // no-op
-      }
-    };
-  } catch (error) {
-    const asErr = error as NodeJS.ErrnoException;
-    if (asErr.code !== "EEXIST") {
-      throw error;
-    }
-    const existing = readJsonFile<{ pid: number; ts: number }>(CREDENTIALS_LOCK_FILE);
-    if (existing !== null && Date.now() - existing.ts < LOCK_STALE_MS) {
-      return null;
-    }
-    try {
-      unlinkSync(CREDENTIALS_LOCK_FILE);
-    } catch {
-      // no-op
-    }
-    try {
-      const fd = openSync(CREDENTIALS_LOCK_FILE, "wx", 0o600);
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-      closeSync(fd);
-      return () => {
-        try {
-          unlinkSync(CREDENTIALS_LOCK_FILE);
-        } catch {
-          // no-op
-        }
-      };
-    } catch {
-      return null;
-    }
   }
 }
 
@@ -354,63 +314,21 @@ async function postJson<T>(
   return data as T;
 }
 
-async function refreshCredentials(
-  baseUrl: string,
-  credentials: Credentials,
-  force: boolean = false,
-): Promise<Credentials> {
-  const release = acquireRefreshLock();
-  if (release === null) {
-    await sleep(2000);
-    const latest = loadCredentials();
-    if (latest !== null && (force || latest.expiresAt > Date.now() + 60_000)) {
-      return latest;
-    }
-    throw new Error("Token refresh failed (concurrent refresh in progress)");
-  }
-  try {
-    const latest = loadCredentials();
-    if (latest !== null && !force && latest.expiresAt > Date.now() + 60_000) {
-      return latest;
-    }
-    const refreshed = await postJson<VerifyResponse>(
-      baseUrl,
-      "/auth/refresh",
-      { refreshToken: credentials.refreshToken },
-      null,
-    );
-    const next: Credentials = {
-      accessToken: refreshed.accessToken,
-      refreshToken: refreshed.refreshToken,
-      expiresAt: refreshed.expiresAt * 1000,
-      baseUrl,
-    };
-    saveCredentials(next);
-    return next;
-  } finally {
-    release();
-  }
-}
-
 async function callProtectedTool<T>(path: string, body: unknown): Promise<T> {
   const credentials = loadCredentials();
   if (credentials === null) {
-    throw new Error("Not logged in. Run `npm run cli -- login --email you@example.com` first.");
+    throw new Error("Not logged in. Run `bun run cli -- login` first.");
   }
-  const baseUrl = credentials.baseUrl;
-  let current = credentials;
-  if (Date.now() >= current.expiresAt - ACCESS_TOKEN_REFRESH_WINDOW_MS) {
-    current = await refreshCredentials(baseUrl, current);
+  if (Date.now() >= credentials.expiresAt) {
+    clearCredentials();
+    throw new Error("Session expired. Run `bun run cli -- login` again.");
   }
-  try {
-    return await postJson<T>(baseUrl, path, body, current.accessToken);
-  } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 401) {
-      throw error;
-    }
-    current = await refreshCredentials(baseUrl, current);
-    return await postJson<T>(baseUrl, path, body, current.accessToken);
-  }
+  return await postJson<T>(
+    credentials.baseUrl,
+    path,
+    body,
+    credentials.accessToken,
+  );
 }
 
 function print(value: unknown, asJson: boolean): void {
@@ -421,10 +339,17 @@ function print(value: unknown, asJson: boolean): void {
   console.log(value);
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Unknown error";
+}
+
 function requireConsent(): Consent {
   const consent = getConsent();
   if (consent === null) {
-    throw new Error("Consent not accepted. Run `npm run cli -- consent accept` first.");
+    throw new Error("Consent not accepted. Run `bun run cli -- consent accept` first.");
   }
   return consent;
 }
@@ -473,82 +398,56 @@ consent.command("check").action(() => {
 
 program
   .command("login")
-  .requiredOption("--email <email>", "User email")
+  .option(
+    "--invite-code <inviteCode>",
+    `Invite code (or set ${INVITE_CODE_ENV_VAR})`,
+  )
   .option(
     "--captcha-token <captchaToken>",
     "hCaptcha response token",
     HCAPTCHA_TEST_RESPONSE_TOKEN,
   )
-  .action(async (args: { email: string; captchaToken: string }) => {
+  .action(async (args: { inviteCode?: string; captchaToken: string }) => {
     requireConsent();
+    const inviteCode =
+      args.inviteCode?.trim() ?? process.env[INVITE_CODE_ENV_VAR]?.trim() ?? "";
+    if (inviteCode.length === 0) {
+      throw new Error(
+        `Invite code required. Pass --invite-code or set ${INVITE_CODE_ENV_VAR}.`,
+      );
+    }
     const baseUrl = getConfig().baseUrl;
     const result = await postJson<LoginResponse>(
       baseUrl,
       "/auth/login",
       {
-        email: args.email,
         captchaToken: args.captchaToken,
+        inviteCode,
       },
-      null,
-    );
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(
-      {
-        email: result.email,
-        otpSent: result.otpSent,
-        expiresAt: new Date(result.expiresAt).toISOString(),
-        debugCode: result.debugCode,
-      },
-      Boolean(globalOpts.json),
-    );
-  });
-
-program
-  .command("verify")
-  .requiredOption("--email <email>", "User email")
-  .requiredOption("--code <code>", "6-digit OTP code")
-  .action(async (args: { email: string; code: string }) => {
-    requireConsent();
-    const baseUrl = getConfig().baseUrl;
-    const verified = await postJson<VerifyResponse>(
-      baseUrl,
-      "/auth/verify",
-      { email: args.email, code: args.code },
       null,
     );
     saveCredentials({
-      accessToken: verified.accessToken,
-      refreshToken: verified.refreshToken,
-      expiresAt: verified.expiresAt * 1000,
+      accessToken: result.accessToken,
+      expiresAt: result.expiresAt * 1000,
       baseUrl,
     });
     const globalOpts = program.opts<{ json?: boolean }>();
     print(
       {
         ok: true,
-        expiresAt: new Date(verified.expiresAt * 1000).toISOString(),
+        expiresAt: new Date(result.expiresAt * 1000).toISOString(),
+        maxApiCalls: result.maxApiCalls,
+        remainingApiCalls: result.remainingApiCalls,
       },
       Boolean(globalOpts.json),
     );
   });
 
-program.command("refresh").action(async () => {
+program.command("logout").action(async () => {
   const credentials = loadCredentials();
-  if (credentials === null) {
-    throw new Error("Not logged in.");
+  if (credentials !== null) {
+    await postJson<{ ok: boolean }>(credentials.baseUrl, "/auth/logout", {}, credentials.accessToken);
   }
-  const next = await refreshCredentials(credentials.baseUrl, credentials, true);
-  const globalOpts = program.opts<{ json?: boolean }>();
-  print(
-    {
-      ok: true,
-      expiresAt: new Date(next.expiresAt).toISOString(),
-    },
-    Boolean(globalOpts.json),
-  );
-});
-
-program.command("logout").action(() => {
   clearCredentials();
   const globalOpts = program.opts<{ json?: boolean }>();
   print({ ok: true }, Boolean(globalOpts.json));
@@ -562,8 +461,36 @@ user.command("retrieve").action(async () => {
   print(data, Boolean(globalOpts.json));
 });
 
+program
+  .command("create_agentmail")
+  .requiredOption("--email <email>", "Requested AgentMail inbox email")
+  .action(async (args: { email: string }) => {
+    const data = await callProtectedTool<CreateAgentmailResponse>(
+      "/api/tools/create_agentmail",
+      {
+        email: args.email,
+      },
+    );
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("delete_agentmail")
+  .requiredOption("--inbox-id <inboxId>", "AgentMail inbox id (typically the inbox email)")
+  .action(async (args: { inboxId: string }) => {
+    const data = await callProtectedTool<DeleteAgentmailResponse>(
+      "/api/tools/delete_agentmail",
+      {
+        inboxId: args.inboxId,
+      },
+    );
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
 program.parseAsync().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown error";
+  const message = toErrorMessage(error);
   console.error(message);
   process.exit(1);
 });
