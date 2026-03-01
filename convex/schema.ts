@@ -86,6 +86,9 @@ export default defineSchema({
   paymentIntents: defineTable({
     userId: v.id("users"),
     intentId: v.string(),
+    intentType: v.optional(v.union(v.string(), v.null())),
+    provider: v.optional(v.union(v.string(), v.null())),
+    metadataJson: v.optional(v.union(v.string(), v.null())),
     task: v.string(),
     budgetUsd: v.number(),
     rail: v.string(),

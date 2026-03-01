@@ -507,15 +507,28 @@ http.route({
       const auth = await authenticateToolCall(ctx, req, "create_intent");
       if (!auth.ok) return auth.response;
       const body = await req.json();
-      const payload = body as { task?: unknown; budgetUsd?: unknown; rail?: unknown };
+      const payload = body as {
+        task?: unknown;
+        budgetUsd?: unknown;
+        rail?: unknown;
+        intentType?: unknown;
+        provider?: unknown;
+        metadata?: unknown;
+      };
       if (typeof payload.task !== "string") return json(400, { error: "task is required" });
       const budgetUsd = typeof payload.budgetUsd === "number" ? payload.budgetUsd : 5;
       const rail = typeof payload.rail === "string" ? payload.rail : "auto";
+      const intentType = typeof payload.intentType === "string" ? payload.intentType : undefined;
+      const provider = typeof payload.provider === "string" ? payload.provider : undefined;
+      const metadataJson = payload.metadata !== undefined ? JSON.stringify(payload.metadata) : undefined;
       const out = await ctx.runMutation(internal.payments.createIntent, {
         userId: auth.session.userId,
         task: payload.task,
         budgetUsd,
         rail,
+        intentType,
+        provider,
+        metadataJson,
       });
       return json(200, out);
     } catch (error) {

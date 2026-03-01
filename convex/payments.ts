@@ -195,6 +195,9 @@ export const createIntent = internalMutation({
     task: v.string(),
     budgetUsd: v.number(),
     rail: v.string(),
+    intentType: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    metadataJson: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const createdAt = now();
@@ -205,6 +208,9 @@ export const createIntent = internalMutation({
     await ctx.db.insert("paymentIntents", {
       userId: args.userId,
       intentId,
+      intentType: args.intentType ?? null,
+      provider: args.provider ?? null,
+      metadataJson: args.metadataJson ?? null,
       task: args.task,
       budgetUsd: args.budgetUsd,
       rail: args.rail,
@@ -219,7 +225,14 @@ export const createIntent = internalMutation({
     await ctx.db.insert("paymentEvents", {
       intentId,
       eventType: "intent_created",
-      payloadJson: JSON.stringify({ task: args.task, budgetUsd: args.budgetUsd, rail: args.rail, status }),
+      payloadJson: JSON.stringify({
+        task: args.task,
+        budgetUsd: args.budgetUsd,
+        rail: args.rail,
+        status,
+        intentType: args.intentType ?? null,
+        provider: args.provider ?? null,
+      }),
       createdAt,
     });
 
@@ -534,6 +547,21 @@ export const executeIntent = internalAction({
       startedAt: ts,
       endedAt: doneTs,
     });
+
+    if (intent.intentType === "api_key_purchase") {
+      return {
+        runId,
+        status: "ok",
+        taskId: buResult.taskId ?? null,
+        output: buResult.output ?? null,
+        traceId,
+        credential: {
+          type: "api_key",
+          provider: intent.provider ?? "unknown",
+          secretRef: randomId("sec"),
+        },
+      };
+    }
 
     return { runId, status: "ok", taskId: buResult.taskId ?? null, output: buResult.output ?? null, traceId };
   },
