@@ -2,12 +2,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
-import {
-  buildCliManifest,
-  renderInstallScript,
-  renderPublicCliScript,
-  renderSkillMarkdown,
-} from "./publicCliAssets";
+import { renderSkillMarkdown } from "./publicCliAssets";
 import { PHASE1_OFFERINGS, PHASE1_POLICY_DEFAULTS } from "./offerings";
 
 const http = httpRouter();
@@ -395,34 +390,6 @@ async function verifyHcaptcha(
 }
 
 http.route({
-  path: "/cli/manifest.json",
-  method: "GET",
-  handler: httpAction(async (_ctx, req) => {
-    const origin = getRequestOrigin(req);
-    return json(200, buildCliManifest(origin));
-  }),
-});
-
-http.route({
-  path: "/cli/install.sh",
-  method: "GET",
-  handler: httpAction(async (_ctx, req) => {
-    const origin = getRequestOrigin(req);
-    return text(200, renderInstallScript(origin), "text/x-shellscript; charset=utf-8");
-  }),
-});
-
-http.route({
-  path: "/cli/bip.mjs",
-  method: "GET",
-  handler: httpAction(async (_ctx, req) => {
-    const origin = getRequestOrigin(req);
-    return text(200, renderPublicCliScript(origin), "text/javascript; charset=utf-8");
-  }),
-});
-
-
-http.route({
   path: "/skill.md",
   method: "GET",
   handler: httpAction(async (_ctx, req) => {
@@ -495,10 +462,7 @@ http.route({
       const result = await ctx.runMutation(internal.auth.startLogin, {
         agentId,
       });
-      return json(200, {
-        ...result,
-        authBypass,
-      });
+      return json(200, result);
     } catch (error) {
       const message = errorToMessage(error);
       if (message.includes("INVITE_CODES is not configured")) {
@@ -691,8 +655,8 @@ http.route({
         last4: pan.slice(-4),
         status: "active",
       });
-      const payments: any = (internal as any).payments;
-      await ctx.runMutation(payments._putSecret, {
+      const secrets: any = (internal as any).secrets;
+      await ctx.runMutation(secrets._putSecret, {
         secretRef: cardRef,
         userId: auth.session.userId,
         provider: "treasury",
@@ -716,8 +680,8 @@ http.route({
       if (!isAdminTokenValid(req)) {
         return json(403, { error: "Invalid or missing x-admin-token" });
       }
-      const payments: any = (internal as any).payments;
-      const cards = await ctx.runQuery(payments.listTreasuryCards, {});
+      const treasury: any = (internal as any).treasury;
+      const cards = await ctx.runQuery(treasury.listTreasuryCards, {});
       return json(200, { ok: true, cards });
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
@@ -737,7 +701,7 @@ http.route({
       if (typeof payload.chain !== "string" || typeof payload.address !== "string") {
         return json(400, { error: "chain and address are required" });
       }
-      const out = await ctx.runMutation(internal.payments.registerWallet, {
+      const out = await ctx.runMutation(internal.wallets.registerWallet, {
         userId: auth.session.userId,
         chain: payload.chain,
         address: payload.address,
@@ -758,18 +722,18 @@ http.route({
       const auth = await authenticateToolCall(ctx, req, "wallet_deposit_address");
       if (!auth.ok) return auth.response;
       const chain = "solana";
-      const payments: any = (internal as any).payments;
-      let wallet = await ctx.runQuery(payments.getLatestWallet, {
+      const walletsApi: any = (internal as any).wallets;
+      let wallet = await ctx.runQuery(walletsApi.getLatestWallet, {
         userId: auth.session.userId,
         chain,
       });
       if (wallet === null) {
-        await ctx.runMutation(payments.generateWallet, {
+        await ctx.runMutation(walletsApi.generateWallet, {
           userId: auth.session.userId,
           chain,
           label: "primary",
         });
-        wallet = await ctx.runQuery(payments.getLatestWallet, {
+        wallet = await ctx.runQuery(walletsApi.getLatestWallet, {
           userId: auth.session.userId,
           chain,
         });
@@ -802,7 +766,7 @@ http.route({
       const body = await req.json().catch(() => ({}));
       const payload = body as { chain?: unknown; label?: unknown };
       const chain = typeof payload.chain === "string" ? payload.chain : "solana";
-      const out = await ctx.runMutation(internal.payments.generateWallet, {
+      const out = await ctx.runMutation(internal.wallets.generateWallet, {
         userId: auth.session.userId,
         chain,
         label: typeof payload.label === "string" ? payload.label : undefined,
@@ -824,11 +788,11 @@ http.route({
       const body = await req.json();
       const payload = body as { chain?: unknown };
       const chain = typeof payload.chain === "string" ? payload.chain : "solana";
-      const wallet = await ctx.runQuery(internal.payments.getLatestWallet, {
+      const wallet = await ctx.runQuery(internal.wallets.getLatestWallet, {
         userId: auth.session.userId,
         chain,
       });
-      const account = await ctx.runQuery(internal.payments._getAccount, {
+      const account = await ctx.runQuery(internal.accounts._getAccount, {
         userId: auth.session.userId,
       });
       return json(200, { chain, wallet, account });
@@ -852,7 +816,7 @@ http.route({
       if (typeof payload.fromAddress !== "string" || typeof payload.toAddress !== "string" || typeof payload.amountSol !== "number") {
         return json(400, { error: "fromAddress, toAddress, amountSol are required" });
       }
-      const out = await ctx.runAction(internal.payments.transferSolBetweenWallets, {
+      const out = await ctx.runAction(internal.wallets.transferSolBetweenWallets, {
         userId: auth.session.userId,
         fromAddress: payload.fromAddress,
         toAddress: payload.toAddress,
@@ -877,7 +841,7 @@ http.route({
       if (typeof payload.amountCents !== "number" || payload.amountCents <= 0) {
         return json(400, { error: "amountCents must be a positive number" });
       }
-      const out = await ctx.runMutation(internal.payments._creditUserFunds, {
+      const out = await ctx.runMutation(internal.accounts._creditUserFunds, {
         userId: auth.session.userId,
         amountCents: Math.round(payload.amountCents),
         refType: typeof payload.refType === "string" ? payload.refType : undefined,
@@ -914,7 +878,7 @@ http.route({
         inbox = { ok: false, error: "agentmail_unavailable" };
       }
 
-      const wallet = await ctx.runMutation(internal.payments.generateWallet, {
+      const wallet = await ctx.runMutation(internal.wallets.generateWallet, {
         userId: auth.session.userId,
         chain,
         label: "bootstrap",
@@ -941,21 +905,32 @@ http.route({
       const auth = await authenticateToolCall(ctx, req, "intent_resume");
       if (!auth.ok) return auth.response;
       const body = await req.json();
-      const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
+      const payload = body as { intentId?: unknown; sessionId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
-      const idempotencyKey = (req.headers.get("x-idempotency-key") ?? "").trim();
-      if (!idempotencyKey) return json(400, { error: "x-idempotency-key header is required" });
-      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      const intent = await ctx.runQuery(internal.intents.getIntent, { intentId: payload.intentId });
       if (intent === null || intent.userId !== auth.session.userId) return json(404, { error: "intent not found" });
-      const out = await ctx.runAction(internal.payments.executeIntent, {
+      if (intent.status !== "action_required") {
+        return json(400, { error: "intent is not in action_required status", currentStatus: intent.status });
+      }
+      const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : undefined;
+      const apiKey =
+        (typeof payload.browserUseApiKey === "string" ? payload.browserUseApiKey.trim() : "") ||
+        (req.headers.get("x-browser-use-api-key") ?? "").trim() ||
+        (process.env.BROWSER_USE_API_KEY ?? "").trim() ||
+        undefined;
+      // Reset intent to approved so executeIntent can pick it up
+      const executor: any = (internal as any).executor;
+      await ctx.runMutation(executor.scheduleResume, {
         intentId: payload.intentId,
-        apiKey:
-          (typeof payload.browserUseApiKey === "string" ? payload.browserUseApiKey.trim() : "") ||
-          (req.headers.get("x-browser-use-api-key") ?? "").trim() ||
-          (process.env.BROWSER_USE_API_KEY ?? "").trim() ||
-          undefined,
+        apiKey,
+        sessionId,
       });
-      return json(200, out);
+      return json(202, {
+        ok: true,
+        intentId: payload.intentId,
+        status: "resuming",
+        message: "Resume scheduled. The agent will continue on the existing browser session. Poll /api/tools/intent_status for progress.",
+      });
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
@@ -972,7 +947,7 @@ http.route({
       const body = await req.json();
       const payload = body as { secretRef?: unknown };
       if (typeof payload.secretRef !== "string") return json(400, { error: "secretRef is required" });
-      const row = await ctx.runQuery(internal.payments._getSecretForUser, {
+      const row = await ctx.runQuery(internal.secrets._getSecretForUser, {
         userId: auth.session.userId,
         secretRef: payload.secretRef,
       });
@@ -997,9 +972,9 @@ http.route({
     try {
       const auth = await authenticateToolCall(ctx, req, "offering_list");
       if (!auth.ok) return auth.response;
-      const payments: any = (internal as any).payments;
-      await ctx.runMutation(payments.seedPhase1OfferingPolicies, {});
-      const rows = await ctx.runQuery(payments.listOfferingPolicies, {});
+      const intentsApi: any = (internal as any).intents;
+      await ctx.runMutation(intentsApi.seedPhase1OfferingPolicies, {});
+      const rows = await ctx.runQuery(intentsApi.listOfferingPolicies, {});
       const byOfferingId = new Map<string, any>(
         (rows as Array<any>).map((row) => [row.offeringId, row]),
       );
@@ -1045,13 +1020,14 @@ http.route({
         return json(400, { error: "maxTx must be a number when provided" });
       }
 
-      const payments: any = (internal as any).payments;
+      const intentsApi: any = (internal as any).intents;
+      const fundingApi: any = (internal as any).funding;
       let target = {
         userId: auth.session.userId,
         agentId: auth.session.agentId,
       };
       if (typeof payload.agentId === "string" && payload.agentId.trim().length > 0) {
-        const resolved = await ctx.runQuery(payments.resolveUserIdOrAgentId, {
+        const resolved = await ctx.runQuery(intentsApi.resolveUserIdOrAgentId, {
           userIdOrAgentId: payload.agentId,
         });
         if (resolved === null) {
@@ -1060,7 +1036,7 @@ http.route({
         target = resolved;
       }
 
-      const out = await ctx.runAction(payments.syncSolanaFundingForUser, {
+      const out = await ctx.runAction(fundingApi.syncSolanaFundingForUser, {
         userId: target.userId,
         maxTx: payload.maxTx,
       });
@@ -1092,8 +1068,8 @@ http.route({
       if (payload.maxTx !== undefined && typeof payload.maxTx !== "number") {
         return json(400, { error: "maxTx must be a number when provided" });
       }
-      const payments: any = (internal as any).payments;
-      const out = await ctx.runAction(payments.getSolanaFundingStatus, {
+      const fundingApi: any = (internal as any).funding;
+      const out = await ctx.runAction(fundingApi.getSolanaFundingStatus, {
         userId: auth.session.userId,
         maxTx: payload.maxTx,
       });
@@ -1139,14 +1115,15 @@ http.route({
       if (payload.amountCents <= 0) {
         return json(400, { error: "amountCents must be a positive number" });
       }
-      const payments: any = (internal as any).payments;
-      const user = await ctx.runQuery(payments.resolveUserIdOrAgentId, {
+      const intentsApi: any = (internal as any).intents;
+      const accountsApi: any = (internal as any).accounts;
+      const user = await ctx.runQuery(intentsApi.resolveUserIdOrAgentId, {
         userIdOrAgentId: payload.userIdOrAgentId,
       });
       if (user === null) {
         return json(404, { error: "user not found" });
       }
-      const out = await ctx.runMutation(payments._creditUserFunds, {
+      const out = await ctx.runMutation(accountsApi._creditUserFunds, {
         userId: user.userId,
         amountCents: Math.round(payload.amountCents),
         refType: "solana_settled",
@@ -1228,8 +1205,8 @@ http.route({
       const metadataJson = metadataValue !== undefined ? JSON.stringify(metadataValue) : undefined;
       let offeringId: string | undefined;
 
-      const payments: any = (internal as any).payments;
-      await ctx.runMutation(payments.seedPhase1OfferingPolicies, {});
+      const intentsApi: any = (internal as any).intents;
+      await ctx.runMutation(intentsApi.seedPhase1OfferingPolicies, {});
 
       const hasIntentType = intentType !== undefined && intentType.trim().length > 0;
       const hasProvider = provider !== undefined && provider.trim().length > 0;
@@ -1240,7 +1217,7 @@ http.route({
         });
       }
       if (hasIntentType && hasProvider) {
-        const validation = await ctx.runQuery(payments.validateIntentAgainstPolicy, {
+        const validation = await ctx.runQuery(intentsApi.validateIntentAgainstPolicy, {
           userId: auth.session.userId,
           intentType,
           provider,
@@ -1252,11 +1229,11 @@ http.route({
         offeringId = validation.offeringId;
       }
 
-      const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter,elevenlabs").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
+      const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter,elevenlabs,cj,shopify,x").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
       if (provider && !allowedProviders.includes(provider.toLowerCase())) {
         return json(403, { error: "provider_not_allowed", provider, allowedProviders });
       }
-      const out = await ctx.runMutation(payments.createIntent, {
+      const out = await ctx.runMutation(intentsApi.createIntent, {
         userId: auth.session.userId,
         task: payload.task,
         budgetUsd,
@@ -1283,7 +1260,7 @@ http.route({
       const body = await req.json();
       const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
-      const out = await ctx.runMutation(internal.payments.approveIntent, {
+      const out = await ctx.runMutation(internal.intents.approveIntent, {
         intentId: payload.intentId,
         approvedBy: auth.session.agentId,
       });
@@ -1304,17 +1281,18 @@ http.route({
       const body = await req.json();
       const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
-      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      const intent = await ctx.runQuery(internal.intents.getIntent, { intentId: payload.intentId });
       if (intent === null || intent.userId !== auth.session.userId) {
         return json(404, { error: "intent not found" });
       }
       const apiKeyFromBody = typeof payload.browserUseApiKey === "string" ? payload.browserUseApiKey.trim() : "";
       const apiKeyFromHeader = (req.headers.get("x-browser-use-api-key") ?? "").trim();
-      const out = await ctx.runAction(internal.payments.executeIntent, {
+      const executorApi: any = (internal as any).executor;
+      const out = await ctx.runMutation(executorApi.scheduleExecution, {
         intentId: payload.intentId,
         apiKey: apiKeyFromBody || apiKeyFromHeader || (process.env.BROWSER_USE_API_KEY ?? "").trim() || undefined,
       });
-      return json(200, out);
+      return json(202, { ...out, message: "Execution scheduled. Poll /api/tools/intent_status for progress." });
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
@@ -1331,7 +1309,7 @@ http.route({
       const body = await req.json();
       const payload = body as { runId?: unknown };
       if (typeof payload.runId !== "string") return json(400, { error: "runId is required" });
-      const run = await ctx.runQuery(internal.payments.getRun, { runId: payload.runId });
+      const run = await ctx.runQuery(internal.intents.getRun, { runId: payload.runId });
       if (run === null || run.userId !== auth.session.userId) {
         return json(404, { error: "run not found" });
       }
@@ -1352,13 +1330,13 @@ http.route({
       const body = await req.json();
       const payload = body as { intentId?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
-      const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
+      const intent = await ctx.runQuery(internal.intents.getIntent, { intentId: payload.intentId });
       if (intent === null || intent.userId !== auth.session.userId) {
         return json(404, { error: "intent not found" });
       }
-      const payments: any = (internal as any).payments;
-      const events = await ctx.runQuery(payments.getIntentEvents, { intentId: payload.intentId });
-      const funding = await ctx.runQuery(payments.getIntentFundingLifecycle, {
+      const intentsApi: any = (internal as any).intents;
+      const events = await ctx.runQuery(intentsApi.getIntentEvents, { intentId: payload.intentId });
+      const funding = await ctx.runQuery(intentsApi.getIntentFundingLifecycle, {
         userId: auth.session.userId,
         intentId: payload.intentId,
       });
@@ -1376,14 +1354,111 @@ http.route({
     try {
       const auth = await authenticateToolCall(ctx, req, "spend_summary");
       if (!auth.ok) return auth.response;
-      const payments: any = (internal as any).payments;
-      const summary = await ctx.runQuery(payments.getSpendSummary, {
+      const intentsApi: any = (internal as any).intents;
+      const summary = await ctx.runQuery(intentsApi.getSpendSummary, {
         userId: auth.session.userId,
       });
       return json(200, summary);
     } catch (error) {
       return json(400, { error: errorToMessage(error) });
     }
+  }),
+});
+
+// ── AgentMail Webhook ─────────────────────────────────────────────
+
+http.route({
+  path: "/webhooks/agentmail",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      // Validate webhook origin via shared secret (fail closed)
+      const webhookSecret = (process.env.AGENTMAIL_WEBHOOK_SECRET ?? "").trim();
+      if (!webhookSecret) {
+        return json(500, { error: "webhook secret not configured" });
+      }
+      const provided =
+        req.headers.get("x-agentmail-secret") ??
+        req.headers.get("x-webhook-secret") ??
+        "";
+      if (provided !== webhookSecret) {
+        return json(401, { error: "invalid webhook secret" });
+      }
+
+      const body = await req.json();
+
+      // AgentMail webhook payload shape:
+      // { inbox_id, message_id, from, subject, text, html, ... }
+      const inboxId = body.inbox_id ?? body.inboxId ?? "";
+      const messageId = body.message_id ?? body.messageId ?? "";
+
+      if (!inboxId || !messageId) {
+        return json(400, { error: "missing inbox_id or message_id" });
+      }
+
+      await ctx.runMutation(internal.agentmail.recordWebhookMessage, {
+        inboxId: String(inboxId),
+        messageId: String(messageId),
+        fromAddress: body.from ?? body.from_address ?? null,
+        subject: body.subject ?? null,
+        textBody: body.text ?? body.text_body ?? null,
+        htmlBody: body.html ?? body.html_body ?? null,
+        receivedAt: Date.now(),
+      });
+
+      return json(200, { ok: true, messageId });
+    } catch (error) {
+      console.error("[webhook/agentmail] error:", error);
+      return json(500, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+// ── Waitlist ──────────────────────────────────────────────────────
+
+http.route({
+  path: "/waitlist",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    try {
+      const body = await req.json().catch(() => ({}));
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      if (email.length === 0 || !email.includes("@")) {
+        return json(400, { error: "valid email required" });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const waitlistApi = (internal as any).waitlist;
+      const existing = await ctx.runQuery(waitlistApi.getByEmail, { email });
+      if (existing === null) {
+        await ctx.runMutation(waitlistApi.insert, { email, createdAt: Date.now() });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
+    } catch (error) {
+      return json(500, { error: errorToMessage(error) });
+    }
+  }),
+});
+
+http.route({
+  path: "/waitlist",
+  method: "OPTIONS",
+  handler: httpAction(async () => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
   }),
 });
 

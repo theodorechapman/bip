@@ -164,4 +164,65 @@ export default defineSchema({
   })
     .index("by_run_id", ["runId"])
     .index("by_intent_id", ["intentId"]),
+
+  waitlistSignups: defineTable({
+    email: v.string(),
+    createdAt: v.number(),
+  }).index("by_email", ["email"]),
+
+  shopifyProducts: defineTable({
+    userId: v.id("users"),
+    cjProductId: v.string(),
+    name: v.string(),
+    description: v.string(),
+    category: v.string(),
+    supplierPrice: v.number(),
+    retailPrice: v.number(),
+    marginPct: v.number(),
+    sku: v.string(),
+    shopifyProductId: v.union(v.number(), v.null()),
+    shopifyHandle: v.union(v.string(), v.null()),
+    status: v.string(), // "sourced" | "listed" | "archived"
+    imagesJson: v.string(), // JSON array of image URLs
+    variantsJson: v.string(), // JSON array of variant objects
+    sourceUrl: v.string(),
+    shippingEstimateDays: v.number(),
+    score: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_id_and_status", ["userId", "status"])
+    .index("by_user_id_and_cj_product_id", ["userId", "cjProductId"])
+    .index("by_user_id_and_shopify_product_id", ["userId", "shopifyProductId"]),
+
+  shopifyOrders: defineTable({
+    userId: v.id("users"),
+    shopifyOrderId: v.number(),
+    orderName: v.string(),
+    totalPrice: v.string(),
+    fulfillmentStatus: v.string(), // "pending" | "cj_placed" | "fulfilled" | "error"
+    lineItemsJson: v.string(), // JSON array of per-line-item CJ order results
+    shopifyFulfillmentId: v.union(v.number(), v.null()),
+    trackingNumber: v.union(v.string(), v.null()),
+    trackingCompany: v.union(v.string(), v.null()),
+    error: v.union(v.string(), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_id_and_status", ["userId", "fulfillmentStatus"])
+    .index("by_user_id_and_shopify_order_id", ["userId", "shopifyOrderId"]),
+
+  agentmailWebhookMessages: defineTable({
+    inboxId: v.string(),
+    messageId: v.string(),
+    fromAddress: v.union(v.string(), v.null()),
+    subject: v.union(v.string(), v.null()),
+    textBody: v.union(v.string(), v.null()),
+    htmlBody: v.union(v.string(), v.null()),
+    receivedAt: v.number(),
+    processed: v.boolean(),
+  })
+    .index("by_inbox_id", ["inboxId"])
+    .index("by_inbox_id_and_processed", ["inboxId", "processed"])
+    .index("by_message_id", ["messageId"]),
 });
