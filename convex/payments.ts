@@ -1,7 +1,7 @@
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { Keypair } from "@solana/web3.js";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 
 function randomId(prefix: string): string {
   const values = new Uint8Array(8);
@@ -28,6 +28,46 @@ function getMinBudgetUsd(): number {
 
 function isSubsidyMode(): boolean {
   return (process.env.SUBSIDY_MODE ?? "true").trim().toLowerCase() !== "false";
+}
+
+
+function getSolAutoSpendCapUsd(): number {
+  const raw = Number(process.env.SOL_AUTO_SPEND_CAP_USD ?? "10");
+  return Number.isFinite(raw) && raw > 0 ? raw : 10;
+}
+
+function getSolRpcUrl(): string {
+  return (process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com").trim();
+}
+
+function parseBitrefillInvoice(output: unknown): { address: string; amountSol: number } | null {
+  if (typeof output !== "string") return null;
+  const addr = output.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
+  const amt = output.match(/([0-9]+(?:\.[0-9]+)?)\s*(SOL|solana)/i);
+  if (!addr || !amt) return null;
+  const amount = Number(amt[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return { address: addr[0], amountSol: amount };
+}
+
+async function sendSolTransfer(params: { secretHex: string; toAddress: string; amountSol: number }): Promise<{ ok: boolean; txSig?: string; error?: string }> {
+  try {
+    const bytes = new Uint8Array((params.secretHex.match(/.{1,2}/g) ?? []).map((b) => parseInt(b, 16)));
+    const kp = Keypair.fromSecretKey(bytes);
+    const conn = new Connection(getSolRpcUrl(), "confirmed");
+    const to = new PublicKey(params.toAddress);
+    const lamports = Math.round(params.amountSol * LAMPORTS_PER_SOL);
+    const { blockhash } = await conn.getLatestBlockhash("confirmed");
+    const tx = new Transaction({ feePayer: kp.publicKey, recentBlockhash: blockhash }).add(
+      SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: to, lamports }),
+    );
+    tx.sign(kp);
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    await conn.confirmTransaction(sig, "confirmed");
+    return { ok: true, txSig: sig };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "sol_transfer_failed" };
+  }
 }
 
 
@@ -255,7 +295,7 @@ export const generateWallet = internalMutation({
       userId: args.userId,
       intentId: undefined,
       provider: "wallet",
-      secretType: "solana_private_key_base64",
+      secretType: "solana_private_key_hex",
       secretValue: Array.from(kp.secretKey).map((b) => b.toString(16).padStart(2, "0")).join(""),
       createdAt,
     });
@@ -710,6 +750,70 @@ export const executeIntent = internalAction({
       return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId, handoffUrl };
     }
 
+    if (intent.intentType === "bitrefill_crypto_checkout") {
+      const invoice = parseBitrefillInvoice(buResult.output);
+      if (invoice === null) {
+        return {
+          runId,
+          status: "action_required",
+          taskId: buResult.taskId ?? null,
+          traceId,
+          handoffUrl: buildBrowserUseHandoffUrl(buResult.taskId),
+          reason: "invoice_not_detected",
+          output: buResult.output ?? null,
+        };
+      }
+      const capUsd = getSolAutoSpendCapUsd();
+      if (invoice.amountSol > capUsd) {
+        return {
+          runId,
+          status: "action_required",
+          taskId: buResult.taskId ?? null,
+          traceId,
+          handoffUrl: buildBrowserUseHandoffUrl(buResult.taskId),
+          reason: "amount_above_cap",
+          invoice,
+          capUsd,
+        };
+      }
+      const secret = await ctx.runQuery(payments._getLatestWalletSecret, { userId: intent.userId });
+      if (secret === null) {
+        return {
+          runId,
+          status: "action_required",
+          taskId: buResult.taskId ?? null,
+          traceId,
+          handoffUrl: buildBrowserUseHandoffUrl(buResult.taskId),
+          reason: "wallet_secret_missing",
+          invoice,
+        };
+      }
+      const transfer = await sendSolTransfer({
+        secretHex: secret.secretValue,
+        toAddress: invoice.address,
+        amountSol: invoice.amountSol,
+      });
+      if (!transfer.ok) {
+        return {
+          runId,
+          status: "failed",
+          taskId: buResult.taskId ?? null,
+          traceId,
+          reason: transfer.error ?? "sol_transfer_failed",
+          invoice,
+        };
+      }
+      return {
+        runId,
+        status: "ok",
+        taskId: buResult.taskId ?? null,
+        traceId,
+        invoice,
+        txSig: transfer.txSig,
+        output: buResult.output ?? null,
+      };
+    }
+
     const handoffNeeded = outputSuggestsManualIntervention(buResult.output);
     const handoffUrl = buildBrowserUseHandoffUrl(buResult.taskId);
 
@@ -986,6 +1090,19 @@ export const _getSecretForUser = internalQuery({
       .unique();
     if (row === null || row.userId !== args.userId) return null;
     return row;
+  },
+});
+
+export const _getLatestWalletSecret = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("agentSecrets")
+      .withIndex("by_user_id_and_created_at", (qq) => qq.eq("userId", args.userId))
+      .order("desc")
+      .take(20);
+    const secret = rows.find((r: any) => r.secretType === "solana_private_key_hex");
+    return secret ?? null;
   },
 });
 
