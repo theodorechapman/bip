@@ -41,7 +41,10 @@ export default function Hero() {
       </div>
 
       {/* Centered content */}
-      <div ref={contentRef} className="relative z-10 h-full flex flex-col items-center justify-center px-6 sm:px-8 text-center">
+      <div
+        ref={contentRef}
+        className="relative z-10 h-full w-full max-w-[1100px] mx-auto flex flex-col items-center justify-center px-6 sm:px-8 text-center"
+      >
 
         {/* Status indicator */}
         <p className="hero-line font-pixel text-sm text-white/40 tracking-[0.3em] mb-12 flex items-center gap-3">
