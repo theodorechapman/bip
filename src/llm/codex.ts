@@ -23,6 +23,25 @@ import {
   ContentPartImageParam,
 } from "browser-use/llm/messages";
 
+/**
+ * Recursively fix 0-indexed element references in Codex output.
+ * browser-use validates index >= 1, but Codex sometimes outputs index: 0.
+ */
+function fixZeroIndices(obj: unknown): void {
+  if (obj === null || typeof obj !== "object") return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) fixZeroIndices(item);
+    return;
+  }
+  const record = obj as Record<string, unknown>;
+  if ("index" in record && record.index === 0) {
+    record.index = 1;
+  }
+  for (const val of Object.values(record)) {
+    fixZeroIndices(val);
+  }
+}
+
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const TOKEN_REFRESH_URL = "https://auth.openai.com/oauth/token";
 const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -307,7 +326,11 @@ export class ChatCodex implements BaseChatModel {
       if (endIdx > 0) rawText = rawText.slice(0, endIdx);
 
       try {
-        const parsed = output_format.parse(JSON.parse(rawText));
+        // Codex sometimes outputs 0-indexed element IDs, but browser-use
+        // validates index >= 1. Fix any "index": 0 to "index": 1.
+        const jsonObj = JSON.parse(rawText);
+        fixZeroIndices(jsonObj);
+        const parsed = output_format.parse(jsonObj);
         return new ChatInvokeCompletion(
           parsed,
           result.usage,
