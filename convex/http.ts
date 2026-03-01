@@ -6,6 +6,7 @@ import {
   buildCliManifest,
   renderInstallScript,
   renderPublicCliScript,
+  renderSkillMarkdown,
 } from "./publicCliAssets";
 
 const http = httpRouter();
@@ -216,6 +217,16 @@ http.route({
   handler: httpAction(async (_ctx, req) => {
     const origin = getRequestOrigin(req);
     return text(200, renderPublicCliScript(origin), "text/javascript; charset=utf-8");
+  }),
+});
+
+
+http.route({
+  path: "/skill.md",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const origin = getRequestOrigin(req);
+    return text(200, renderSkillMarkdown(origin), "text/markdown; charset=utf-8");
   }),
 });
 

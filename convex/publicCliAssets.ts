@@ -409,3 +409,32 @@ export function buildCliManifest(baseUrl: string): {
     quickInstall: `curl -fsSL ${baseUrl}/cli/install.sh | sh`,
   };
 }
+
+
+export function renderSkillMarkdown(origin: string): string {
+  return `# bip skill.md (agent onboarding)
+
+live endpoint:
+- ${origin}
+
+fast start:
+\`\`\`bash
+BASE="${origin}"
+AGENT_ID="agent-$(date +%s)"
+TOKEN=$(curl -s -X POST "$BASE/auth/login" -H 'content-type: application/json' -H "x-agent-id: $AGENT_ID" -d '{}' | jq -r '.accessToken')
+\`\`\`
+
+core endpoints:
+- POST /auth/login
+- POST /api/tools/create_intent
+- POST /api/tools/approve_intent
+- POST /api/tools/execute_intent
+- POST /api/tools/intent_status
+- POST /api/tools/run_status
+
+notes:
+- pass Browser Use key on execute via header: \`X-Browser-Use-API-Key\`
+- execute responses include \`traceId\`
+- optional sinks via env: \`LAMINAR_INGEST_URL\`, \`HUD_TRACE_URL\`
+`;
+}
