@@ -193,6 +193,7 @@ export const consumeAccessTokenUse = internalMutation({
       userId: user._id,
       agentId: user.agentId,
       email: user.email,
+      phone: user.phone ?? null,
       maxApiCalls: accessSession.maxApiCalls,
       remainingApiCalls: accessSession.maxApiCalls - nextUsed,
     };

@@ -48,6 +48,7 @@ type EncryptedEnvelope = {
 type UserRetrieveResponse = {
   id: string;
   email: string | null;
+  phone: string | null;
   agentId: string;
   maxApiCalls: number;
   remainingApiCalls: number;
@@ -65,6 +66,22 @@ type CreateAgentmailResponse = {
 type DeleteAgentmailResponse = {
   ok: boolean;
   inboxId: string;
+  deletedLocalRecords: number;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
+type RentPhoneResponse = {
+  numberId: string;
+  phoneNumber: string;
+  areaCode: string | null;
+  maxApiCalls: number;
+  remainingApiCalls: number;
+};
+
+type ReleasePhoneResponse = {
+  ok: boolean;
+  numberId: string;
   deletedLocalRecords: number;
   maxApiCalls: number;
   remainingApiCalls: number;
@@ -509,6 +526,86 @@ program
     );
     const globalOpts = program.opts<{ json?: boolean }>();
     print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("rent_phone")
+  .description("Rent a dedicated US phone number via JoltSMS")
+  .option("--area-code <areaCode>", "Preferred 3-digit US area code")
+  .action(async (args: { areaCode?: string }) => {
+    const data = await callProtectedTool<RentPhoneResponse>(
+      "/api/tools/rent_phone",
+      {
+        areaCode: args.areaCode,
+      },
+    );
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+program
+  .command("release_phone")
+  .description("Release (cancel) this agent's active phone number")
+  .requiredOption("--number-id <numberId>", "JoltSMS number ID to release")
+  .action(async (args: { numberId: string }) => {
+    const data = await callProtectedTool<ReleasePhoneResponse>(
+      "/api/tools/release_phone",
+      {
+        numberId: args.numberId,
+      },
+    );
+    const globalOpts = program.opts<{ json?: boolean }>();
+    print(data, Boolean(globalOpts.json));
+  });
+
+const provision = program.command("provision").description("Provision API keys from providers");
+
+provision
+  .command("openrouter")
+  .description("Sign up for OpenRouter and retrieve an API key")
+  .option("--env-file <path>", "Path to .env file to write key to", join(process.cwd(), ".env"))
+  .option("--no-save", "Don't save to .env file, just print the key")
+  .action(async (args: { envFile: string; save: boolean }) => {
+    const { getOpenRouterKey } = await import("./providers/openrouter");
+    const key = await getOpenRouterKey();
+    if (!key || !/^sk-or-[a-zA-Z0-9_-]+$/.test(key)) {
+      console.error("Failed to provision OpenRouter API key.");
+      process.exit(1);
+    }
+    console.log(`\nAPI Key: ${key}`);
+    if (args.save) {
+      const envVar = "OPENROUTER_API_KEY";
+      const envPath = args.envFile;
+      let content = "";
+      if (existsSync(envPath)) {
+        content = readFileSync(envPath, "utf-8");
+        const regex = new RegExp(`^${envVar}=.*$`, "m");
+        if (regex.test(content)) {
+          content = content.replace(regex, `${envVar}=${key}`);
+          console.log(`Updated ${envVar} in ${envPath}`);
+        } else {
+          content = content.trimEnd() + `\n${envVar}=${key}\n`;
+          console.log(`Appended ${envVar} to ${envPath}`);
+        }
+      } else {
+        content = `${envVar}=${key}\n`;
+        console.log(`Created ${envPath} with ${envVar}`);
+      }
+      writeFileSync(envPath, content, { encoding: "utf-8" });
+    }
+  });
+
+provision
+  .command("demo-signup")
+  .description("Test full agent identity stack (email + phone) by signing up on a site")
+  .option("--url <url>", "Target signup URL", "https://github.com/signup")
+  .action(async (args: { url: string }) => {
+    const { demoSignup } = await import("./providers/demo-signup");
+    const result = await demoSignup(args.url);
+    if (!result) {
+      console.error("Signup failed.");
+      process.exit(1);
+    }
   });
 
 program.parseAsync().catch((error: unknown) => {
