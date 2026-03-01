@@ -601,6 +601,8 @@ http.route({
       const body = await req.json();
       const payload = body as { intentId?: unknown; browserUseApiKey?: unknown };
       if (typeof payload.intentId !== "string") return json(400, { error: "intentId is required" });
+      const idempotencyKey = (req.headers.get("x-idempotency-key") ?? "").trim();
+      if (!idempotencyKey) return json(400, { error: "x-idempotency-key header is required" });
       const intent = await ctx.runQuery(internal.payments.getIntent, { intentId: payload.intentId });
       if (intent === null || intent.userId !== auth.session.userId) return json(404, { error: "intent not found" });
       const out = await ctx.runAction(internal.payments.executeIntent, {
@@ -668,6 +670,10 @@ http.route({
       const intentType = typeof payload.intentType === "string" ? payload.intentType : undefined;
       const provider = typeof payload.provider === "string" ? payload.provider : undefined;
       const metadataJson = payload.metadata !== undefined ? JSON.stringify(payload.metadata) : undefined;
+      const allowedProviders = ((process.env.ALLOWED_PROVIDERS ?? "bitrefill,namecheap,openrouter").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
+      if (provider && !allowedProviders.includes(provider.toLowerCase())) {
+        return json(403, { error: "provider_not_allowed", provider, allowedProviders });
+      }
       const out = await ctx.runMutation(internal.payments.createIntent, {
         userId: auth.session.userId,
         task: payload.task,
