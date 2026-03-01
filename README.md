@@ -185,3 +185,13 @@ What it covers:
 
 The test harness uses local mock providers for hCaptcha and AgentMail.
 It simulates AgentMail free-tier behavior with a cap of `3` active inboxes and validates that deleting an inbox frees a slot.
+
+
+## tracing sinks (optional)
+
+set either/both to mirror run lifecycle events externally:
+
+- `LAMINAR_INGEST_URL` (+ optional `LAMINAR_API_KEY`)
+- `HUD_TRACE_URL` (+ optional `HUD_API_KEY`)
+
+payload includes `traceId`, `runId`, `intentId`, phase (`started|rail_selected|failed|confirmed`), status, rail, task metadata, and timing fields.

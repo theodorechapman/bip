@@ -25,6 +25,65 @@ function getMinBudgetUsd(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
 }
 
+
+type TracePhase = "started" | "rail_selected" | "failed" | "confirmed";
+
+async function postJson(url: string, payload: unknown, headers: Record<string, string>): Promise<void> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`trace sink failed (${resp.status}): ${body.slice(0, 240)}`);
+  }
+}
+
+async function emitExternalTrace(event: {
+  traceId: string;
+  runId: string;
+  intentId: string;
+  phase: TracePhase;
+  status: string;
+  rail?: string;
+  budgetUsd?: number;
+  task?: string;
+  taskId?: string | null;
+  error?: string | null;
+  startedAt?: number;
+  endedAt?: number;
+}): Promise<void> {
+  const laminarUrl = (process.env.LAMINAR_INGEST_URL ?? "").trim();
+  const laminarApiKey = (process.env.LAMINAR_API_KEY ?? "").trim();
+  const hudUrl = (process.env.HUD_TRACE_URL ?? "").trim();
+  const hudApiKey = (process.env.HUD_API_KEY ?? "").trim();
+
+  const payload = {
+    source: "bip",
+    ts: Date.now(),
+    ...event,
+  };
+
+  const writes: Promise<void>[] = [];
+  if (laminarUrl) {
+    writes.push(postJson(laminarUrl, payload, laminarApiKey ? { Authorization: `Bearer ${laminarApiKey}` } : {}));
+  }
+  if (hudUrl) {
+    writes.push(postJson(hudUrl, payload, hudApiKey ? { Authorization: `Bearer ${hudApiKey}` } : {}));
+  }
+  if (writes.length === 0) return;
+
+  const settled = await Promise.allSettled(writes);
+  const err = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+  if (err) {
+    console.error("[trace] emit failed", err.reason);
+  }
+}
+
 async function callBrowserUseTask(task: string, apiKeyOverride?: string): Promise<{
   ok: boolean;
   taskId?: string;
@@ -267,6 +326,7 @@ export const executeIntent = internalAction({
     }
 
     const runId = randomId("run");
+    const traceId = `tr_${runId}`;
     const ts = now();
 
     await ctx.runMutation(payments._insertRun, {
@@ -291,8 +351,20 @@ export const executeIntent = internalAction({
     await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_started",
-      payloadJson: JSON.stringify({ runId, rail: resolvedRail }),
+      payloadJson: JSON.stringify({ runId, traceId, rail: resolvedRail }),
       createdAt: ts,
+    });
+
+    await emitExternalTrace({
+      traceId,
+      runId,
+      intentId: intent.intentId,
+      phase: "started",
+      status: "running",
+      rail: resolvedRail,
+      budgetUsd: intent.budgetUsd,
+      task: intent.task,
+      startedAt: ts,
     });
 
     if (["x402", "bitrefill", "card"].includes(resolvedRail) === false) {
@@ -320,8 +392,20 @@ export const executeIntent = internalAction({
     await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "rail_selected",
-      payloadJson: JSON.stringify({ runId, rail: resolvedRail, mode: paymentsMode }),
+      payloadJson: JSON.stringify({ runId, traceId, rail: resolvedRail, mode: paymentsMode }),
       createdAt: ts,
+    });
+
+    await emitExternalTrace({
+      traceId,
+      runId,
+      intentId: intent.intentId,
+      phase: "rail_selected",
+      status: "running",
+      rail: resolvedRail,
+      budgetUsd: intent.budgetUsd,
+      task: intent.task,
+      startedAt: ts,
     });
 
     const buTask = `[rail=${resolvedRail}] ${intent.task}`;
@@ -346,11 +430,26 @@ export const executeIntent = internalAction({
       await ctx.runMutation(payments._recordEvent, {
         intentId: intent.intentId,
         eventType: "intent_execution_failed",
-        payloadJson: JSON.stringify({ runId, error: buResult.error, taskId: buResult.taskId ?? null }),
+        payloadJson: JSON.stringify({ runId, traceId, error: buResult.error, taskId: buResult.taskId ?? null }),
         createdAt: doneTs,
       });
 
-      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null };
+      await emitExternalTrace({
+        traceId,
+        runId,
+        intentId: intent.intentId,
+        phase: "failed",
+        status: "failed",
+        rail: resolvedRail,
+        budgetUsd: intent.budgetUsd,
+        task: intent.task,
+        taskId: buResult.taskId ?? null,
+        error: buResult.error ?? null,
+        startedAt: ts,
+        endedAt: doneTs,
+      });
+
+      return { runId, status: "failed", error: buResult.error, taskId: buResult.taskId ?? null, traceId };
     }
 
     await ctx.runMutation(payments._updateRun, {
@@ -370,11 +469,25 @@ export const executeIntent = internalAction({
     await ctx.runMutation(payments._recordEvent, {
       intentId: intent.intentId,
       eventType: "intent_execution_confirmed",
-      payloadJson: JSON.stringify({ runId, taskId: buResult.taskId ?? null }),
+      payloadJson: JSON.stringify({ runId, traceId, taskId: buResult.taskId ?? null }),
       createdAt: doneTs,
     });
 
-    return { runId, status: "ok", taskId: buResult.taskId ?? null, output: buResult.output ?? null };
+    await emitExternalTrace({
+      traceId,
+      runId,
+      intentId: intent.intentId,
+      phase: "confirmed",
+      status: "ok",
+      rail: resolvedRail,
+      budgetUsd: intent.budgetUsd,
+      task: intent.task,
+      taskId: buResult.taskId ?? null,
+      startedAt: ts,
+      endedAt: doneTs,
+    });
+
+    return { runId, status: "ok", taskId: buResult.taskId ?? null, output: buResult.output ?? null, traceId };
   },
 });
 
