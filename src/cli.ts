@@ -48,7 +48,6 @@ type EncryptedEnvelope = {
 type UserRetrieveResponse = {
   id: string;
   email: string | null;
-  phone: string | null;
   agentId: string;
   maxApiCalls: number;
   remainingApiCalls: number;
@@ -66,22 +65,6 @@ type CreateAgentmailResponse = {
 type DeleteAgentmailResponse = {
   ok: boolean;
   inboxId: string;
-  deletedLocalRecords: number;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type RentPhoneResponse = {
-  numberId: string;
-  phoneNumber: string;
-  areaCode: string | null;
-  maxApiCalls: number;
-  remainingApiCalls: number;
-};
-
-type ReleasePhoneResponse = {
-  ok: boolean;
-  numberId: string;
   deletedLocalRecords: number;
   maxApiCalls: number;
   remainingApiCalls: number;
@@ -528,35 +511,9 @@ program
     print(data, Boolean(globalOpts.json));
   });
 
-program
-  .command("rent_phone")
-  .description("Rent a dedicated US phone number via JoltSMS")
-  .option("--area-code <areaCode>", "Preferred 3-digit US area code")
-  .action(async (args: { areaCode?: string }) => {
-    const data = await callProtectedTool<RentPhoneResponse>(
-      "/api/tools/rent_phone",
-      {
-        areaCode: args.areaCode,
-      },
-    );
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
-
-program
-  .command("release_phone")
-  .description("Release (cancel) this agent's active phone number")
-  .requiredOption("--number-id <numberId>", "JoltSMS number ID to release")
-  .action(async (args: { numberId: string }) => {
-    const data = await callProtectedTool<ReleasePhoneResponse>(
-      "/api/tools/release_phone",
-      {
-        numberId: args.numberId,
-      },
-    );
-    const globalOpts = program.opts<{ json?: boolean }>();
-    print(data, Boolean(globalOpts.json));
-  });
+// Shopify autopilot commands
+import { registerShopifyCommands } from "../shopify/cli";
+registerShopifyCommands(program);
 
 const provision = program.command("provision").description("Provision API keys from providers");
 
@@ -597,7 +554,7 @@ provision
 
 provision
   .command("demo-signup")
-  .description("Test full agent identity stack (email + phone) by signing up on a site")
+  .description("Test full agent identity stack (email) by signing up on a site")
   .option("--url <url>", "Target signup URL", "https://github.com/signup")
   .action(async (args: { url: string }) => {
     const { demoSignup } = await import("./providers/demo-signup");

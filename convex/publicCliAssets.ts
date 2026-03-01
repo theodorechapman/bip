@@ -149,8 +149,6 @@ Commands:
   user retrieve
   create_agentmail --email <email>
   delete_agentmail --inbox-id <inboxId>
-  rent_phone [--area-code <areaCode>]
-  release_phone --number-id <numberId>
   logout
   uninstall
 \`;
@@ -384,31 +382,6 @@ async function main() {
     }
     const result = await callProtectedTool("/api/tools/delete_agentmail", {
       inboxId: inboxId.trim(),
-    });
-    print(result, asJson);
-    return;
-  }
-
-  if (command === "rent_phone") {
-    const areaCode = popOption(args, "--area-code");
-    expectNoExtraArgs(args);
-    const body = {};
-    if (areaCode !== null && areaCode.trim().length > 0) {
-      body.areaCode = areaCode.trim();
-    }
-    const result = await callProtectedTool("/api/tools/rent_phone", body);
-    print(result, asJson);
-    return;
-  }
-
-  if (command === "release_phone") {
-    const numberId = popOption(args, "--number-id");
-    expectNoExtraArgs(args);
-    if (numberId === null || numberId.trim().length === 0) {
-      throw new Error("--number-id is required");
-    }
-    const result = await callProtectedTool("/api/tools/release_phone", {
-      numberId: numberId.trim(),
     });
     print(result, asJson);
     return;

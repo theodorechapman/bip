@@ -5,7 +5,6 @@ export default defineSchema({
   users: defineTable({
     agentId: v.string(),
     email: v.union(v.string(), v.null()),
-    phone: v.optional(v.union(v.string(), v.null())),
     createdAt: v.number(),
   })
     .index("by_agent_id", ["agentId"])
@@ -61,14 +60,4 @@ export default defineSchema({
     .index("by_user_id_and_created_at", ["userId", "createdAt"])
     .index("by_user_id_and_inbox_id", ["userId", "inboxId"])
     .index("by_user_id_and_requested_email", ["userId", "requestedEmail"]),
-
-  joltsmsNumbers: defineTable({
-    userId: v.id("users"),
-    numberId: v.string(),
-    phoneNumber: v.string(),
-    areaCode: v.union(v.string(), v.null()),
-    createdAt: v.number(),
-  })
-    .index("by_user_id_and_created_at", ["userId", "createdAt"])
-    .index("by_user_id_and_number_id", ["userId", "numberId"]),
 });

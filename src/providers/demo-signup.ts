@@ -1,7 +1,6 @@
 /**
- * Demo provider — tests the full agent identity stack:
+ * Demo provider — tests the agent identity stack:
  *   - AgentMail for email
- *   - JoltSMS for phone verification
  *   - browser-use for automation
  *
  * Run: bun src/providers/demo-signup.ts [url]
@@ -17,7 +16,6 @@ import {
   waitForEmail,
   extractVerificationLink,
 } from "../agentmail-client";
-import { registerPhoneActions } from "./phone-verify";
 
 import { randomBytes } from "node:crypto";
 
@@ -47,10 +45,7 @@ export async function demoSignup(targetUrl?: string): Promise<string | null> {
   const knownIds = await getExistingMessageIds(inbox.inbox_id);
   console.log(`\n   Email: ${email}`);
 
-  // ── Phone identity ──
   const controller = new Controller();
-  const phone = await registerPhoneActions(controller);
-  console.log(`   Phone: ${phone.phoneNumber}`);
 
   // ── Email verification action ──
   controller.registry.action(
@@ -95,26 +90,21 @@ You are automating account signup on a website.
 TARGET URL: ${url}
 
 You have these tools available:
-- get_phone_number: Returns a real US phone number you can enter on forms
-- check_phone_otp: Waits for and returns an SMS verification code sent to that phone
 - check_verification_email: Waits for and returns email verification link/code
 
 CREDENTIALS (use sensitive data):
 - email: use the sensitive data 'email'
 - password: use the sensitive data 'password'
-- phone: use the sensitive data 'phone' OR call get_phone_number
 
 STEPS:
 1. Navigate to ${url}
 2. Find the signup/register form
 3. Fill in: email, password (and username if needed - use something like "bip-agent-" + random 4 digits)
-4. If phone number is required, enter the phone number from sensitive data 'phone'
-5. Submit the form
-6. If email verification is needed, use check_verification_email to get the link/code
-7. If phone/SMS verification is needed, use check_phone_otp to get the OTP code
-8. Enter any verification codes on the form
-9. Complete any onboarding steps
-10. Once signed up, return "SIGNUP_COMPLETE" as your final answer
+4. Submit the form
+5. If email verification is needed, use check_verification_email to get the link/code
+6. Enter any verification codes on the form
+7. Complete any onboarding steps
+8. Once signed up, return "SIGNUP_COMPLETE" as your final answer
 
 If you encounter CAPTCHAs you cannot solve, return "BLOCKED_BY_CAPTCHA".
 If signup fails for another reason, return "FAILED: <reason>".
@@ -128,7 +118,7 @@ If signup fails for another reason, return "FAILED: <reason>".
     max_actions_per_step: 5,
     use_vision: true,
     sensitive_data: {
-      "*": { email, password: generatePassword(), phone: phone.phoneNumber },
+      "*": { email, password: generatePassword() },
     },
   });
 

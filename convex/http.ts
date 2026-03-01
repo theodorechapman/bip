@@ -82,7 +82,6 @@ type AuthedSession = {
   userId: Id<"users">;
   agentId: string;
   email: string | null;
-  phone: string | null;
   maxApiCalls: number;
   remainingApiCalls: number;
 };
@@ -121,7 +120,6 @@ async function authenticateToolCall(
       userId: session.userId,
       agentId: session.agentId,
       email: session.email,
-      phone: session.phone,
       maxApiCalls: session.maxApiCalls,
       remainingApiCalls: session.remainingApiCalls,
     },
@@ -411,7 +409,6 @@ http.route({
       return json(200, {
         id: auth.session.userId,
         email: auth.session.email,
-        phone: auth.session.phone,
         agentId: auth.session.agentId,
         maxApiCalls: auth.session.maxApiCalls,
         remainingApiCalls: auth.session.remainingApiCalls,
@@ -484,77 +481,6 @@ http.route({
     } catch (error) {
       const message = errorToMessage(error);
       if (message.includes("AGENTMAIL_API_KEY is not configured")) {
-        return json(500, { error: message });
-      }
-      return json(400, { error: message });
-    }
-  }),
-});
-
-http.route({
-  path: "/api/tools/rent_phone",
-  method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const auth = await authenticateToolCall(ctx, req, "rent_phone");
-      if (!auth.ok) {
-        return auth.response;
-      }
-      const body = await req.json();
-      const payload = body as { areaCode?: unknown };
-      const areaCode =
-        typeof payload.areaCode === "string" && payload.areaCode.trim().length > 0
-          ? payload.areaCode.trim()
-          : undefined;
-
-      const rented = await ctx.runAction(internal.joltsms.rentPhoneNumber, {
-        userId: auth.session.userId,
-        areaCode,
-      });
-      return json(200, {
-        ...rented,
-        maxApiCalls: auth.session.maxApiCalls,
-        remainingApiCalls: auth.session.remainingApiCalls,
-      });
-    } catch (error) {
-      const message = errorToMessage(error);
-      if (message.includes("JOLTSMS_API_KEY is not configured")) {
-        return json(500, { error: message });
-      }
-      return json(400, { error: message });
-    }
-  }),
-});
-
-http.route({
-  path: "/api/tools/release_phone",
-  method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const auth = await authenticateToolCall(ctx, req, "release_phone");
-      if (!auth.ok) {
-        return auth.response;
-      }
-      const body = await req.json();
-      const payload = body as { numberId?: unknown };
-      if (
-        typeof payload.numberId !== "string" ||
-        payload.numberId.trim().length === 0
-      ) {
-        return json(400, { error: "numberId is required" });
-      }
-      const released = await ctx.runAction(internal.joltsms.releasePhoneNumber, {
-        userId: auth.session.userId,
-        numberId: payload.numberId,
-      });
-      return json(200, {
-        ...released,
-        maxApiCalls: auth.session.maxApiCalls,
-        remainingApiCalls: auth.session.remainingApiCalls,
-      });
-    } catch (error) {
-      const message = errorToMessage(error);
-      if (message.includes("JOLTSMS_API_KEY is not configured")) {
         return json(500, { error: message });
       }
       return json(400, { error: message });
