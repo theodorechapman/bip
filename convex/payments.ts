@@ -771,6 +771,8 @@ export const executeIntent = internalAction({
     if (intent === null) throw new Error("Intent not found");
     if (intent.status !== "approved") throw new Error("Intent is not approved");
 
+    await ctx.runMutation(payments._ensureAccount, { userId: intent.userId });
+
     const paymentsMode = getPaymentsMode();
     const minBudget = getMinBudgetUsd();
     const subsidyMode = isSubsidyMode();
@@ -1328,6 +1330,28 @@ export const _creditUserFunds = internalMutation({
   },
 });
 
+export const _ensureAccount = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const ts = now();
+    let account = await ctx.db.query("agentAccounts").withIndex("by_user_id", (q) => q.eq("userId", args.userId)).unique();
+    if (account === null) {
+      const id = await ctx.db.insert("agentAccounts", {
+        userId: args.userId,
+        currency: "USD",
+        availableCents: 0,
+        heldCents: 0,
+        status: "active",
+        createdAt: ts,
+        updatedAt: ts,
+      });
+      account = await ctx.db.get(id);
+    }
+    if (account === null) throw new Error("account_create_failed");
+    return { ok: true, account };
+  },
+});
+
 export const _getAccount = internalQuery({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
@@ -1355,7 +1379,7 @@ export const _releaseHeldFundsForIntent = internalMutation({
   handler: async (ctx, args) => {
     const ts = now();
     const account = await ctx.db.query("agentAccounts").withIndex("by_user_id", (q) => q.eq("userId", args.userId)).unique();
-    if (account === null) throw new Error("account_not_found");
+    if (account === null) return { ok: true, availableCents: 0, heldCents: 0 };
     const amt = Math.min(args.amountCents, account.heldCents);
     const available = account.availableCents + amt;
     const held = account.heldCents - amt;
@@ -1370,7 +1394,7 @@ export const _settleHeldFundsForIntent = internalMutation({
   handler: async (ctx, args) => {
     const ts = now();
     const account = await ctx.db.query("agentAccounts").withIndex("by_user_id", (q) => q.eq("userId", args.userId)).unique();
-    if (account === null) throw new Error("account_not_found");
+    if (account === null) return { ok: true, availableCents: 0, heldCents: 0 };
     const amt = Math.min(args.amountCents, account.heldCents);
     const held = account.heldCents - amt;
     await ctx.db.patch(account._id, { heldCents: held, updatedAt: ts });
