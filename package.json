@@ -9,7 +9,8 @@
     "convex:dev:once": "CONVEX_AGENT_MODE=anonymous convex dev --once --configure new --dev-deployment local",
     "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
     "test": "bun test",
-    "test:e2e": "bun test tests/e2e/fullstack.test.ts"
+    "test:e2e": "bun test tests/e2e/fullstack.test.ts",
+    "provision": "bun src/cli.ts provision"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -22,6 +23,7 @@
   },
   "dependencies": {
     "commander": "^14.0.1",
-    "convex": "^1.32.0"
+    "convex": "^1.32.0",
+    "browser-use": "^0.5.0"
   }
 }
